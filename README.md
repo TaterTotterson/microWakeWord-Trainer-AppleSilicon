@@ -1,7 +1,13 @@
 **Quick Start:**
 
+# Make the training script executable (first time only)
+```bash
+chmod +x train_microwakeword_macos.sh
+```
+# Train with the default settings (wake word = "hey_tater")
+```bash
 ./train_microwakeword_macos.sh "hey_tater"
-
+```
 This will train a model for `hey_tater` and produce `hey_tater.tflite` + `hey_tater.json`
 ready for ESPHome integration.
 
