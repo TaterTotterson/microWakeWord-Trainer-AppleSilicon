@@ -1,3 +1,8 @@
+<div align="center">
+  <img src="https://raw.githubusercontent.com/TaterTotterson/microWakeWord-Trainer-Docker/refs/heads/main/mmw.png" alt="MicroWakeWord Trainer Logo" width="100" />
+  <h1>microWakeWord Trainer AppleSilicon</h1>
+</div>
+
 ## **Quick Start:**
 
 ### Make the training script executable (first time only)
