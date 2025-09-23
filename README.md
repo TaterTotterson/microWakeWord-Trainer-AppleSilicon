@@ -1,10 +1,10 @@
-**Quick Start:**
+## **Quick Start:**
 
-# Make the training script executable (first time only)
+### Make the training script executable (first time only)
 ```bash
 chmod +x train_microwakeword_macos.sh
 ```
-# Train with the default settings (wake word = "hey_tater")
+### Train with the default settings (wake word = "hey_tater")
 ```bash
 ./train_microwakeword_macos.sh "hey_tater"
 ```
