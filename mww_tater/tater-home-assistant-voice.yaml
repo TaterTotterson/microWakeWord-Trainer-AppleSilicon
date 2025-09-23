@@ -77,7 +77,6 @@ esp32:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  use_address: 10.4.20.37
   id: wifi_id
   fast_connect: ${hidden_ssid}
   on_connect:
