@@ -28,8 +28,14 @@ Examples:
 ```bash
 ./train_microwakeword_macos.sh "ok_mango" 20000
 ```
+# Train with a custom batch size (controls Piper generation speed/memory usage)
+```bash
+./train_microwakeword_macos.sh "hey_robot" 50000 256
+```
 # Train with a custom Piper voice
 ```bash
 ./train_microwakeword_macos.sh "hey_phooey" 50000 100 --piper-model voices/en_US-amy.pt
 ```
+> **Tip:** `BATCH_SIZE` only affects Piper TTS generation — higher values generate samples faster but use more memory.  
 > **Tip:** If you rerun with the same wake word and sample count, it will **skip TTS generation** and use your cached clips, making retraining much faster.
+
