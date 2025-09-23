@@ -270,8 +270,8 @@ shutil.copy(src, dst)
 meta = {
   "type": "micro",
   "wake_word": target,
-  "author": "master phooey",
-  "website": "https://github.com/MasterPhooey/MicroWakeWord-Trainer-Docker",
+  "author": "Tater Totterson",
+  "website": "https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon",
   "model": f"{safe}.tflite",
   "trained_languages": ["en"],
   "version": 2,
