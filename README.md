@@ -31,19 +31,19 @@ ready for ESPHome integration.
 
 Examples:
 
-# Train with a custom wake word (uses defaults for TTS sample count + batch size)
+### Train with a custom wake word (uses defaults for TTS sample count + batch size)
 ```bash
 ./train_microwakeword_macos.sh "hey_tater"
 ```
-# Train with fewer samples (faster)
+### Train with fewer samples (faster)
 ```bash
 ./train_microwakeword_macos.sh "ok_mango" 20000
 ```
-# Train with a custom batch size (controls Piper generation speed/memory usage)
+### Train with a custom batch size (controls Piper generation speed/memory usage)
 ```bash
 ./train_microwakeword_macos.sh "hey_robot" 50000 256
 ```
-# Train with a custom Piper voice
+### Train with a custom Piper voice
 ```bash
 ./train_microwakeword_macos.sh "hey_phooey" 50000 100 --piper-model voices/en_US-amy.pt
 ```
