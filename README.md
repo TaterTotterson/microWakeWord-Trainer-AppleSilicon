@@ -47,6 +47,21 @@ Examples:
 ```bash
 ./train_microwakeword_macos.sh "hey_phooey" 50000 100 --piper-model voices/en_US-amy.pt
 ```
+### Multi-Voice Training (Recommended)
+
+You can train with multiple Piper voices to make the model more robust across speakers.
+Pass `--piper-model` **multiple times** (accepts `.pt` or `.onnx`):
+```bash
+./train_microwakeword_macos.sh "hey_tater" 50000 100 \
+  --piper-model piper-sample-generator/models/en_US-libritts_r-medium.pt \
+  --piper-model voices/en_US-amy.pt \
+  --piper-model voices/en_GB-male.pt
+```
+Notes:
+- If no `--piper-model` is provided, a default English voice is auto-downloaded.
+- Using diverse voices (gender, accent) typically improves real-world recall.
+- `BATCH_SIZE` (3rd arg) only affects Piper TTS generation throughput/memory, not TF training.
+
 > **Tip:** `BATCH_SIZE` only affects Piper TTS generation — higher values generate samples faster but use more memory.  
 > **Tip:** If you rerun with the same wake word and sample count, it will **skip TTS generation** and use your cached clips, making retraining much faster.
 
