@@ -56,7 +56,6 @@ Notes:
 - `.pt` voices use PyTorch + Metal (GPU) on Apple Silicon for maximum speed.
 - `.onnx` voices are supported but **not recommended** on Apple Silicon — they run on CPU and are single-speaker only.
 - If no `--piper-model` is provided, `en_US-libritts_r-medium.pt` is used by default.
-- `BATCH_SIZE` (3rd arg) only affects Piper TTS generation throughput/memory, not TF training.
 - See all official Piper voices here: https://huggingface.co/rhasspy/piper-voices/tree/main
 
 > **Tip:** `BATCH_SIZE` only affects Piper TTS generation — higher values generate samples faster but use more memory.  
