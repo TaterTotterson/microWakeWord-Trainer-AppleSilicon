@@ -13,10 +13,6 @@ Clone the repo and enter the folder:
 git clone https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon.git
 cd microWakeWord-Trainer-AppleSilicon
 ```
-### Make the training script executable (first time only)
-```bash
-chmod +x train_microwakeword_macos.sh
-```
 ### Train with the default settings (wake word = "hey_tater")
 ```bash
 ./train_microwakeword_macos.sh "hey_tater"
