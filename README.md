@@ -3,8 +3,16 @@
   <h1>microWakeWord Trainer Apple Silicon</h1>
 </div>
 
-## **Quick Start:**
+> **Note:** The script will automatically install **ffmpeg** and **wget** via Homebrew
+if they are missing. Homebrew itself must already be installed:
+https://brew.sh/
 
+## **Quick Start:**
+Clone the repo and enter the folder:
+```bash
+git clone https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon.git
+cd microWakeWord-Trainer-AppleSilicon
+```
 ### Make the training script executable (first time only)
 ```bash
 chmod +x train_microwakeword_macos.sh
