@@ -2,7 +2,7 @@
 # train_microwakeword_macos.sh
 # One-shot: setup (idempotent) + run pipeline on Apple Silicon (macOS).
 # Usage:
-#   ./train_microwakeword_macos.sh "hey_norman" 50000 100 \
+#   ./train_microwakeword_macos.sh "hey_tater" 50000 100 \
 #       --piper-model /path/to/voice1.onnx --piper-model /path/to/voice2.pt
 #
 # If no --piper-model is given, we auto-download a default .pt voice.
@@ -26,6 +26,20 @@ done
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
 fi
+
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
+fi
+
+# ── Ensure system deps ────────────────────────────────────────────────────────
+if ! command -v brew &>/dev/null; then
+  echo "❌ Homebrew is required but not found. Install from https://brew.sh/ first."
+  exit 1
+fi
+
+echo "📦 Ensuring ffmpeg + wget are installed (via Homebrew)…"
+brew install ffmpeg wget || true
 
 # ── venv (force ARM64 & a known-good Python) ──────────────────────────────────
 # You can override PYTHON_BIN if you prefer a different path/version.
