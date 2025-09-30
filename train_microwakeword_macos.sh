@@ -27,11 +27,6 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
 fi
 
-
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
-fi
-
 # ── Ensure system deps ────────────────────────────────────────────────────────
 if ! command -v brew &>/dev/null; then
   echo "❌ Homebrew is required but not found. Install from https://brew.sh/ first."
@@ -39,7 +34,15 @@ if ! command -v brew &>/dev/null; then
 fi
 
 echo "📦 Ensuring ffmpeg + wget are installed (via Homebrew)…"
-brew install ffmpeg wget || true
+brew list ffmpeg &>/dev/null || brew install ffmpeg
+brew list wget &>/dev/null || brew install wget
+
+# Workaround: on some macOS (e.g. M4 / Tahoe), torchcodec fails to locate ffmpeg libs
+FFMPEG_LIB_DIR="$(brew --prefix ffmpeg)/lib"
+if [[ -d "$FFMPEG_LIB_DIR" ]]; then
+  export DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG_LIB_DIR:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+  echo "✅ ffmpeg library path set: $FFMPEG_LIB_DIR"
+fi
 
 # ── venv (force ARM64 & a known-good Python) ──────────────────────────────────
 # You can override PYTHON_BIN if you prefer a different path/version.
@@ -120,7 +123,6 @@ PY
 
 
 # Other deps
-python -m pip install -q datasets soundfile librosa scipy numpy tqdm pyyaml requests ipython jupyter || true
 python -m pip install -q "git+https://github.com/puddly/pymicro-features@puddly/minimum-cpp-version" \
                            "git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f" || true
 # Audio/ML stack
