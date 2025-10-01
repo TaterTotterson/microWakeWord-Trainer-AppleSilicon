@@ -33,12 +33,13 @@ if ! command -v brew &>/dev/null; then
   exit 1
 fi
 
-echo "📦 Ensuring ffmpeg + wget are installed (via Homebrew)…"
-brew list ffmpeg &>/dev/null || brew install ffmpeg
+# brew is not installing ffmpeg if version not specified. libtorchcodec is not yet compatible with ffmpeg v8
+echo "📦 Ensuring ffmpeg@7 + wget are installed (via Homebrew)…"
+brew list ffmpeg@7 &>/dev/null || brew install ffmpeg@7
 brew list wget &>/dev/null || brew install wget
 
 # Workaround: on some macOS (e.g. M4 / Tahoe), torchcodec fails to locate ffmpeg libs
-FFMPEG_LIB_DIR="$(brew --prefix ffmpeg)/lib"
+FFMPEG_LIB_DIR="$(brew --prefix ffmpeg@7)/lib"
 if [[ -d "$FFMPEG_LIB_DIR" ]]; then
   export DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG_LIB_DIR:${DYLD_FALLBACK_LIBRARY_PATH:-}"
   echo "✅ ffmpeg library path set: $FFMPEG_LIB_DIR"
