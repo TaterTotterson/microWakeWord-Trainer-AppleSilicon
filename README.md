@@ -58,9 +58,7 @@ For Apple Silicon, it’s recommended to use the **multi-speaker** model:
 Notes:
 - `en_US-libritts_r-medium.pt` is a multi-speaker model and will automatically generate varied voices, making your model more robust.
 - `.pt` voices use PyTorch + Metal (GPU) on Apple Silicon for maximum speed.
-- `.onnx` voices are supported but **not recommended** on Apple Silicon — they run on CPU and are single-speaker only.
 - If no `--piper-model` is provided, `en_US-libritts_r-medium.pt` is used by default.
-- See all official Piper voices here: https://huggingface.co/rhasspy/piper-voices/tree/main
 
 > **Tip:** `BATCH_SIZE` only affects Piper TTS generation — higher values generate samples faster but use more memory.  
 > **Tip:** If you rerun with the same wake word and sample count, it will **skip TTS generation** and use your cached clips, making retraining much faster.
