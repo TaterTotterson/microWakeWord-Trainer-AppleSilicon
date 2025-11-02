@@ -33,13 +33,12 @@ if ! command -v brew &>/dev/null; then
   exit 1
 fi
 
-# brew is not installing ffmpeg if version not specified. libtorchcodec is not yet compatible with ffmpeg v8
-echo "📦 Ensuring ffmpeg@7 + wget are installed (via Homebrew)…"
-brew list ffmpeg@7 &>/dev/null || brew install ffmpeg@7
+echo "📦 Ensuring ffmpeg + wget are installed (via Homebrew)…"
+brew list ffmpeg &>/dev/null || brew install ffmpeg
 brew list wget &>/dev/null || brew install wget
 
 # Workaround: on some macOS (e.g. M4 / Tahoe), torchcodec fails to locate ffmpeg libs
-FFMPEG_LIB_DIR="$(brew --prefix ffmpeg@7)/lib"
+FFMPEG_LIB_DIR="$(brew --prefix ffmpeg)/lib"
 if [[ -d "$FFMPEG_LIB_DIR" ]]; then
   export DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG_LIB_DIR:${DYLD_FALLBACK_LIBRARY_PATH:-}"
   echo "✅ ffmpeg library path set: $FFMPEG_LIB_DIR"
@@ -129,17 +128,20 @@ python -m pip install -q "git+https://github.com/puddly/pymicro-features@puddly/
 # Audio/ML stack
 python -m pip install -q datasets soundfile librosa scipy numpy tqdm pyyaml requests ipython jupyter || true
 
-# NEW: needed for HF Audio decoding in streaming mode
+# needed for HF Audio decoding in streaming mode
 python -m pip install -q torchcodec || true
 
 
 # microWakeWord source (editable)
-if [[ ! -d "microWakeWord" ]]; then
+if [[ ! -d "micro-wake-word" ]]; then
   echo "⬇️ Cloning microWakeWord…"
-  git clone https://github.com/kahrendt/microWakeWord.git >/dev/null
+  git clone https://github.com/TaterTotterson/micro-wake-word.git >/dev/null
+else
+  echo "🔁 Updating microWakeWord…"
+  (cd micro-wake-word && git pull --ff-only origin main || true)
 fi
-python -m pip install -q -e ./microWakeWord || true
 
+python -m pip install -q -e ./micro-wake-word || true
 # Official piper-sample-generator (replaces fork)
 bash scripts_macos/get_piper_generator.sh
 
@@ -176,41 +178,25 @@ if [[ ${#PIPER_MODELS[@]} -gt 0 ]]; then
 fi
 export PIPER_MODELS_CSV
 
-# ── (A) preview sample (skip if exists) ───────────────────────────────────────
-if [[ ! -f "generated_samples/0.wav" ]]; then
-  echo "🔊 Generating 1 preview sample…"
-  python - <<'PY'
-import os, sys, shlex, subprocess
+# ── (A) clean previous run artifacts (match NVIDIA/Streamlit version) ────────
+echo "🧹 Cleaning previous run artifacts…"
+rm -f  training_parameters.yaml
+rm -rf trained_models
+rm -rf generated_augmented_features
+rm -rf generated_samples
+echo "✅ Cleanup done."
 
-if "piper-sample-generator/" not in sys.path:
-    sys.path.append("piper-sample-generator/")
+# make sure the folder exists so 'find' won't fail under 'set -e'
+mkdir -p generated_samples
 
-models = [m.strip() for m in os.environ.get("PIPER_MODELS_CSV","").split(",") if m.strip()]
-model_flags = sum([["--model", m] for m in models], [])
-
-cmd = [
-    sys.executable, "piper-sample-generator/generate_samples.py",
-    os.environ["TARGET_WORD"],
-    "--max-samples", "1",
-    "--batch-size", "1",
-    "--output-dir", "generated_samples",
-    *model_flags,
-]
-print("CMD:", " ".join(shlex.quote(c) for c in cmd))
-subprocess.run(cmd, check=True)
-PY
-  echo "   -> generated_samples/0.wav"
-else
-  echo "✅ Preview sample exists; skipping."
-fi
-
-# ── (B) bulk TTS (skip if enough files present) ───────────────────────────────
+# ── (B) bulk TTS (skip if enough files present) ──────────────────────────────
 count_existing=$(find generated_samples -name '*.wav' 2>/dev/null | wc -l | tr -d ' ')
 if [[ "${count_existing:-0}" -lt "$MAX_TTS_SAMPLES" ]]; then
   echo "🎤 Generating ${MAX_TTS_SAMPLES} samples for '${TARGET_WORD}' (batch ${BATCH_SIZE})…"
   python - <<'PY'
 import os, sys, shlex, subprocess
 
+# make sure the generator is importable
 if "piper-sample-generator/" not in sys.path:
     sys.path.append("piper-sample-generator/")
 
@@ -218,15 +204,19 @@ models = [m.strip() for m in os.environ.get("PIPER_MODELS_CSV","").split(",") if
 model_flags = sum([["--model", m] for m in models], [])
 
 cmd = [
-    sys.executable, "piper-sample-generator/generate_samples.py",
+    sys.executable,
+    "piper-sample-generator/generate_samples.py",
     os.environ["TARGET_WORD"],
     "--max-samples", os.environ["MAX_TTS_SAMPLES"],
     "--batch-size",  os.environ["BATCH_SIZE"],
     "--output-dir",  "generated_samples",
     *model_flags,
 ]
+
 print("CMD:", " ".join(shlex.quote(c) for c in cmd))
-subprocess.run(cmd, check=True)
+proc = subprocess.run(cmd, text=True, capture_output=False)
+if proc.returncode != 0:
+    raise SystemExit(proc.returncode)
 PY
 else
   echo "✅ Found ${count_existing} samples (>= desired); skipping TTS generation."
