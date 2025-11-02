@@ -2,10 +2,6 @@
 
 import os
 
-# Force Hugging Face datasets to use soundfile and NOT torchcodec
-# (this must run before importing anything that uses datasets.audio)
-os.environ.setdefault("DATASETS_AUDIO_BACKEND", "soundfile")
-
 from mmap_ninja.ragged import RaggedMmap
 from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.clips import Clips
