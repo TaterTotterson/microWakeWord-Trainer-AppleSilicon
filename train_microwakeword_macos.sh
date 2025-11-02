@@ -128,10 +128,6 @@ python -m pip install -q "git+https://github.com/puddly/pymicro-features@puddly/
 # Audio/ML stack
 python -m pip install -q datasets soundfile librosa scipy numpy tqdm pyyaml requests ipython jupyter || true
 
-# needed for HF Audio decoding in streaming mode
-python -m pip install -q torchcodec || true
-
-
 # microWakeWord source (editable)
 if [[ ! -d "micro-wake-word" ]]; then
   echo "⬇️ Cloning microWakeWord…"
