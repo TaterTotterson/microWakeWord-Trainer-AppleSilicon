@@ -33,15 +33,31 @@ if ! command -v brew &>/dev/null; then
   exit 1
 fi
 
-echo "📦 Ensuring ffmpeg + wget are installed (via Homebrew)…"
-brew list ffmpeg &>/dev/null || brew install ffmpeg
+echo "📦 Ensuring ffmpeg@7 + wget are installed (via Homebrew)…"
+
+# wget first
 brew list wget &>/dev/null || brew install wget
 
-# Workaround: on some macOS (e.g. M4 / Tahoe), torchcodec fails to locate ffmpeg libs
-FFMPEG_LIB_DIR="$(brew --prefix ffmpeg)/lib"
+# prefer ffmpeg@7 because torchcodec wants < 8
+if brew info ffmpeg@7 &>/dev/null; then
+  brew list ffmpeg@7 &>/dev/null || brew install ffmpeg@7
+  FFMPEG_PREFIX="$(brew --prefix ffmpeg@7)"
+  echo "✅ Using ffmpeg@7 at $FFMPEG_PREFIX"
+else
+  # fallback if ffmpeg@7 isn’t available on this Homebrew
+  brew list ffmpeg &>/dev/null || brew install ffmpeg
+  FFMPEG_PREFIX="$(brew --prefix ffmpeg)"
+  echo "⚠️ ffmpeg@7 not found; using default ffmpeg instead"
+fi
+
+# Make the chosen ffmpeg visible to torchcodec on macOS (ARM sometimes needs DYLD_*)
+FFMPEG_LIB_DIR="$FFMPEG_PREFIX/lib"
 if [[ -d "$FFMPEG_LIB_DIR" ]]; then
   export DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG_LIB_DIR:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+  export DYLD_LIBRARY_PATH="$FFMPEG_LIB_DIR:${DYLD_LIBRARY_PATH:-}"
   echo "✅ ffmpeg library path set: $FFMPEG_LIB_DIR"
+else
+  echo "⚠️ Could not find ffmpeg lib dir at $FFMPEG_LIB_DIR"
 fi
 
 # ── venv (force ARM64 & a known-good Python) ──────────────────────────────────
@@ -87,6 +103,14 @@ python -m pip install -U pip setuptools wheel >/dev/null
 TF_VERSION="${TF_VERSION:-2.16.2}"
 TF_METAL_VERSION="${TF_METAL_VERSION:-1.2.0}"
 
+# ── install PyTorch + torchcodec for HF audio decoding ------------------------
+# your error said torchcodec wanted torch 2.9.0, so install that first
+python -m pip install -q "torch==2.9.0"
+python -m pip install -q torchcodec
+
+# tell HF to use torch backend, not soundfile
+export DATASETS_AUDIO_BACKEND=torch
+
 # Ensure supported Python + arch (TF 2.16 has wheels for 3.10–3.12 on arm64)
 ARCH=$(python -c 'import platform; print(platform.machine())')
 PYVER=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
@@ -103,7 +127,7 @@ python -m pip install -q "tensorflow-macos==${TF_VERSION}" "tensorflow-metal==${
 
 # Self-heal if plugin load fails (common when versions get out of sync)
 python - <<'PY'
-import sys, traceback, subprocess
+import sys, traceback, subprocess, os
 try:
     import tensorflow as tf
     print("✅ TensorFlow", tf.__version__, "loaded.")
@@ -121,12 +145,11 @@ except Exception as e:
 print("Devices:", [d.name for d in __import__("tensorflow").config.list_logical_devices()])
 PY
 
-
 # Other deps
 python -m pip install -q "git+https://github.com/puddly/pymicro-features@puddly/minimum-cpp-version" \
                            "git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f" || true
-# Audio/ML stack
-python -m pip install -q datasets soundfile librosa scipy numpy tqdm pyyaml requests ipython jupyter || true
+# Audio/ML stack (keep datasets etc. — torch backend will handle audio)
+python -m pip install -q datasets librosa scipy numpy tqdm pyyaml requests ipython jupyter || true
 
 # microWakeWord source (editable)
 if [[ ! -d "micro-wake-word" ]]; then
