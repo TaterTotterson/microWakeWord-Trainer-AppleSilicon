@@ -1,15 +1,23 @@
 # scripts_macos/make_features.py
+
 import os
+
+# Force Hugging Face datasets to use soundfile and NOT torchcodec
+# (this must run before importing anything that uses datasets.audio)
+os.environ.setdefault("DATASETS_AUDIO_BACKEND", "soundfile")
+
 from mmap_ninja.ragged import RaggedMmap
 from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.spectrograms import SpectrogramGeneration
 from pathlib import Path
 
+
 def validate(paths):
     for p in paths:
         if not os.path.exists(p):
             raise SystemExit(f"❌ Missing directory: {p}. Run dataset prep first.")
+
 
 impulse_paths = ["mit_rirs"]
 background_paths = ["fma_16k", "audioset_16k"]
@@ -65,8 +73,12 @@ for split, cfg in split_cfg.items():
     )
     RaggedMmap.from_generator(
         out_dir=str(out_dir / "wakeword_mmap"),
-        sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
+        sample_generator=spectros.spectrogram_generator(
+            split=cfg["name"],
+            repeat=cfg["repetition"],
+        ),
         batch_size=100,
         verbose=True,
     )
+
 print("✅ Features ready.")
