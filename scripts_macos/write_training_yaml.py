@@ -1,5 +1,6 @@
 # scripts_macos/write_training_yaml.py
 import yaml, os
+from pathlib import Path
 
 config = {
   "window_step_ms": 10,
@@ -26,6 +27,11 @@ config = {
   "minimization_metric": None,
   "maximization_metric": "average_viable_recall",
 }
+
+# Add personal features if they exist
+if os.path.exists("personal_augmented_features/training"):
+    config["features"].insert(1, {"features_dir": "personal_augmented_features", "sampling_weight": 3.0, "penalty_weight": 1.0, "truth": True, "truncation_strategy": "truncate_start", "type": "mmap"})
+    print("✅ Added personal features with higher weight (3.0)")
 
 with open("training_parameters.yaml", "w") as f:
     yaml.dump(config, f)
