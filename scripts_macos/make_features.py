@@ -84,14 +84,10 @@ for split, cfg in split_cfg.items():
     )
     RaggedMmap.from_generator(
         out_dir=str(out_dir / "wakeword_mmap"),
-<<<<<<< HEAD
         sample_generator=spectros.spectrogram_generator(
             split=cfg["name"],
             repeat=cfg["repetition"],
         ),
-=======
-        sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
->>>>>>> 426f158 (Undo)
         batch_size=100,
         verbose=True,
     )
