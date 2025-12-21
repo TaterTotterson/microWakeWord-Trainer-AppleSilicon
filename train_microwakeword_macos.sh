@@ -73,14 +73,25 @@ TORCH_VERSION="${TORCH_VERSION:-2.9.0}"
 if [[ ! -d ".venv" ]]; then
   echo "🧪 Creating ARM64 venv with $PYTHON_BIN"
   arch -arm64 "$PYTHON_BIN" -m venv .venv
-  # shellcheck disable=SC1091
-  source .venv/bin/activate
+fi
 
+# always activate (both create + reuse)
+# shellcheck disable=SC1091
+source .venv/bin/activate
+
+# canonical python for the rest of the script (never rely on PATH again)
+PY="$(pwd)/.venv/bin/python"
+if [[ ! -x "$PY" ]]; then
+  echo "❌ venv python not found at $PY"
+  exit 1
+fi
+
+if [[ ! -f ".venv/.pinned_installed" ]]; then
   echo "🧹 Fresh venv → installing pinned toolchain"
-  python -m pip install -U pip setuptools wheel
+  "$PY" -m pip install -U pip setuptools wheel
 
-  # Pinned TF/Keras stack (this is what we want to stay stable)
-  python -m pip install \
+  # Pinned TF/Keras stack (stable)
+  "$PY" -m pip install \
     "protobuf==${PROTOBUF_VERSION}" \
     "flatbuffers==${FLATBUFFERS_VERSION}" \
     "keras==${KERAS_VERSION}" \
@@ -88,34 +99,33 @@ if [[ ! -d ".venv" ]]; then
     "tensorflow-metal==${TF_METAL_VERSION}"
 
   # Pinned torch stack for torchcodec / datasets audio backend
-  python -m pip install "torch==${TORCH_VERSION}"
-  python -m pip install torchcodec
+  "$PY" -m pip install "torch==${TORCH_VERSION}" torchcodec
+
+  touch ".venv/.pinned_installed"
 else
   echo "✅ Reusing existing .venv (no upgrades)"
-  # shellcheck disable=SC1091
-  source .venv/bin/activate
 fi
 
 # ── HARD FAIL: ensure pip is the venv pip ────────────────────────────────────
-VENV_PREFIX="$(python -c 'import sys; print(sys.prefix)')"
-python -m pip -V | grep -q "$VENV_PREFIX" || {
+VENV_PREFIX="$("$PY" -c 'import sys; print(sys.prefix)')"
+"$PY" -m pip -V | grep -q "$VENV_PREFIX" || {
   echo "❌ pip is not using venv ($VENV_PREFIX)"
-  python -m pip -V
+  "$PY" -m pip -V
   exit 1
 }
 
 # ── Sanity prints ────────────────────────────────────────────────────────────
-echo "python: $(which python)"
-echo "pip:    $(which pip)"
-python - <<'PY'
+echo "python: $PY"
+echo "pip:    $("$PY" -m pip -V | awk '{print $1, $2, $3, $4, $5}')"
+"$PY" - <<'PY'
 import platform, sys
 print("Python:", sys.version.replace("\n"," "))
 print("Arch:  ", platform.machine())
 PY
 
 # ── Ensure we’re on arm64 + supported Python ─────────────────────────────────
-ARCH=$(python -c 'import platform; print(platform.machine())')
-PYVER=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+ARCH=$("$PY" -c 'import platform; print(platform.machine())')
+PYVER=$("$PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
 if [[ "$ARCH" != "arm64" ]]; then
   echo "❌ venv arch is $ARCH (needs arm64). Recreate with:"
@@ -129,8 +139,10 @@ case "$PYVER" in
 esac
 
 # ── HARD FAIL: verify pinned versions (no silent drift) ──────────────────────
-python - <<PY
-import tensorflow as tf, keras, pkgutil, sys
+"$PY" - <<PY
+import sys
+import tensorflow as tf
+import keras
 import google.protobuf
 import flatbuffers
 
@@ -163,45 +175,10 @@ PY
 # tell HF to use torch backend, not soundfile
 export DATASETS_AUDIO_BACKEND=torch
 
-# Ensure supported Python + arch (TF 2.16 has wheels for 3.10–3.12 on arm64)
-ARCH=$(python -c 'import platform; print(platform.machine())')
-PYVER=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-if [[ "$ARCH" != "arm64" ]]; then
-  echo "❌ venv arch is $ARCH; needs arm64."; exit 1
-fi
-case "$PYVER" in
-  3.10|3.11|3.12) : ;; 
-  *) echo "❌ Python $PYVER detected. Use 3.10–3.12 for TF ${TF_VERSION}."; exit 1 ;;
-esac
-
-# Install pinned TensorFlow + Metal
-python -m pip install -q "tensorflow-macos==${TF_VERSION}" "tensorflow-metal==${TF_METAL_VERSION}"
-
-# Self-heal if plugin load fails (common when versions get out of sync)
-python - <<'PY'
-import sys, traceback, subprocess, os
-try:
-    import tensorflow as tf
-    print("✅ TensorFlow", tf.__version__, "loaded.")
-except Exception as e:
-    print("⚠️  TensorFlow failed to load, attempting self-heal…")
-    traceback.print_exc()
-    subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y",
-                           "tensorflow-metal", "tensorflow-macos", "tensorflow"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir",
-                           "--force-reinstall", f"tensorflow-macos=={os.environ.get('TF_VERSION','2.16.2')}"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir",
-                           "--force-reinstall", f"tensorflow-metal=={os.environ.get('TF_METAL_VERSION','1.2.0')}"])
-    import tensorflow as tf
-    print("✅ TensorFlow", tf.__version__, "recovered.")
-print("Devices:", [d.name for d in __import__("tensorflow").config.list_logical_devices()])
-PY
-
-# Other deps
-python -m pip install -q "git+https://github.com/puddly/pymicro-features@puddly/minimum-cpp-version" \
+# Other deps (best-effort)
+"$PY" -m pip install -q "git+https://github.com/puddly/pymicro-features@puddly/minimum-cpp-version" \
                            "git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f" || true
-# Audio/ML stack (keep datasets etc. — torch backend will handle audio)
-python -m pip install -q datasets librosa scipy numpy tqdm pyyaml requests ipython jupyter || true
+"$PY" -m pip install -q datasets librosa scipy numpy tqdm pyyaml requests ipython jupyter || true
 
 # microWakeWord source (editable)
 if [[ ! -d "micro-wake-word" ]]; then
@@ -212,16 +189,17 @@ else
   (cd micro-wake-word && git pull --ff-only origin main || true)
 fi
 
-python -m pip install -q -e ./micro-wake-word || true
+"$PY" -m pip install -q -e ./micro-wake-word || true
+
 # Official piper-sample-generator (replaces fork)
 bash scripts_macos/get_piper_generator.sh
 
 # ── verify Metal GPU (optional) ───────────────────────────────────────────────
-python - <<'PY'
+"$PY" - <<'PY'
 import tensorflow as tf
 devs = tf.config.list_logical_devices()
 print("✅ TF logical devices:", [d.name for d in devs])
-if not any("GPU" in d.device_type for d in devs):
+if not any(d.device_type == "GPU" for d in devs):
     print("⚠️  No GPU logical device detected. Will run on CPU.")
 PY
 
@@ -241,7 +219,6 @@ if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
   PIPER_MODELS=("$DEFAULT_MODEL_PT")
 fi
 
-
 # ── Pass models to Python via env ─────────────────────────────────────────────
 PIPER_MODELS_CSV=""
 if [[ ${#PIPER_MODELS[@]} -gt 0 ]]; then
@@ -257,35 +234,43 @@ rm -rf generated_augmented_features
 rm -rf generated_samples
 echo "✅ Cleanup done."
 
-# make sure the folder exists so 'find' won't fail under 'set -e'
 mkdir -p generated_samples
 
 # ── (B) bulk TTS (skip if enough files present) ──────────────────────────────
 count_existing=$(find generated_samples -name '*.wav' 2>/dev/null | wc -l | tr -d ' ')
 if [[ "${count_existing:-0}" -lt "$MAX_TTS_SAMPLES" ]]; then
   echo "🎤 Generating ${MAX_TTS_SAMPLES} samples for '${TARGET_WORD}' (batch ${BATCH_SIZE})…"
-  python - <<'PY'
+  "$PY" - <<'PY'
 import os, sys, shlex, subprocess
 
 # make sure the generator is importable
 if "piper-sample-generator/" not in sys.path:
     sys.path.append("piper-sample-generator/")
 
+TARGET = os.environ["TARGET_WORD"]
+MAX_SAMPLES = int(os.environ["MAX_TTS_SAMPLES"])
+BATCH = int(os.environ["BATCH_SIZE"])
+OUT_DIR = "generated_samples"
+
 models = [m.strip() for m in os.environ.get("PIPER_MODELS_CSV","").split(",") if m.strip()]
 model_flags = sum([["--model", m] for m in models], [])
+
+# "Speed" control for Piper is length_scale; generator exposes it as --length-scales
+LENGTH_SCALES = ["0.85", "0.95", "1.0", "1.05", "1.15"]
 
 cmd = [
     sys.executable,
     "piper-sample-generator/generate_samples.py",
-    os.environ["TARGET_WORD"],
-    "--max-samples", os.environ["MAX_TTS_SAMPLES"],
-    "--batch-size",  os.environ["BATCH_SIZE"],
-    "--output-dir",  "generated_samples",
+    TARGET,
+    "--max-samples", str(MAX_SAMPLES),
+    "--batch-size",  str(BATCH),
+    "--output-dir",  OUT_DIR,
+    "--length-scales", *LENGTH_SCALES,
     *model_flags,
 ]
 
 print("CMD:", " ".join(shlex.quote(c) for c in cmd))
-proc = subprocess.run(cmd, text=True, capture_output=False)
+proc = subprocess.run(cmd, text=True)
 if proc.returncode != 0:
     raise SystemExit(proc.returncode)
 PY
@@ -294,19 +279,19 @@ else
 fi
 
 # ── (C) pull/prepare augmentation datasets (RIR, Audioset, FMA) ──────────────
-python scripts_macos/prepare_datasets.py
+"$PY" scripts_macos/prepare_datasets.py
 
 # ── (D) build augmenter + spectrogram feature mmaps ───────────────────────────
-python scripts_macos/make_features.py
+"$PY" scripts_macos/make_features.py
 
 # ── (E) download precomputed negative spectrograms ────────────────────────────
-python scripts_macos/fetch_negatives.py
+"$PY" scripts_macos/fetch_negatives.py
 
 # ── (F) write training YAML (tuned for your notebook) ────────────────────────
-python scripts_macos/write_training_yaml.py
+"$PY" scripts_macos/write_training_yaml.py
 
 # ── (G) train + export (Metal TF) ────────────────────────────────────────────
-python -m microwakeword.model_train_eval \
+"$PY" -m microwakeword.model_train_eval \
   --training_config=training_parameters.yaml \
   --train 1 \
   --restore_checkpoint 1 \
@@ -326,25 +311,21 @@ python -m microwakeword.model_train_eval \
   --stride 2
 
 # ── (H) package artifacts (name by wake word) ─────────────────────────────────
-python - <<'PY'
+"$PY" - <<'PY'
 import os, re, shutil, json
 from pathlib import Path
 
-# 1) derive a safe base name from TARGET_WORD (fallback "wakeword")
 target = os.environ.get("TARGET_WORD", "wakeword")
-# normalize: lowercase, spaces->underscore, strip invalids
 safe = re.sub(r'[^a-z0-9_]+', '', re.sub(r'\s+', '_', target.lower()))
 if not safe:
     safe = "wakeword"
 
-# 2) source tflite (from training export) and destination
 src = Path("trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite")
 dst = Path(f"{safe}.tflite")
 if not src.exists():
     raise SystemExit(f"❌ Model not found at {src}")
 shutil.copy(src, dst)
 
-# 3) write JSON metadata pointing to the renamed model
 meta = {
   "type": "micro",
   "wake_word": target,
