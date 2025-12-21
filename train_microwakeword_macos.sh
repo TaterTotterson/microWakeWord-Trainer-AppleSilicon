@@ -60,19 +60,51 @@ else
   echo "⚠️ Could not find ffmpeg lib dir at $FFMPEG_LIB_DIR"
 fi
 
-# ── venv (force ARM64 & a known-good Python) ──────────────────────────────────
-# You can override PYTHON_BIN if you prefer a different path/version.
+# ── venv (ARM64 + pinned stack, install once) ────────────────────────────────
 PYTHON_BIN="${PYTHON_BIN:-/opt/homebrew/bin/python3.11}"
+
+TF_VERSION="${TF_VERSION:-2.16.2}"
+TF_METAL_VERSION="${TF_METAL_VERSION:-1.2.0}"
+KERAS_VERSION="${KERAS_VERSION:-3.3.3}"
+PROTOBUF_VERSION="${PROTOBUF_VERSION:-4.25.8}"
+FLATBUFFERS_VERSION="${FLATBUFFERS_VERSION:-23.5.26}"
+TORCH_VERSION="${TORCH_VERSION:-2.9.0}"
 
 if [[ ! -d ".venv" ]]; then
   echo "🧪 Creating ARM64 venv with $PYTHON_BIN"
   arch -arm64 "$PYTHON_BIN" -m venv .venv
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+
+  echo "🧹 Fresh venv → installing pinned toolchain"
+  python -m pip install -U pip setuptools wheel
+
+  # Pinned TF/Keras stack (this is what we want to stay stable)
+  python -m pip install \
+    "protobuf==${PROTOBUF_VERSION}" \
+    "flatbuffers==${FLATBUFFERS_VERSION}" \
+    "keras==${KERAS_VERSION}" \
+    "tensorflow-macos==${TF_VERSION}" \
+    "tensorflow-metal==${TF_METAL_VERSION}"
+
+  # Pinned torch stack for torchcodec / datasets audio backend
+  python -m pip install "torch==${TORCH_VERSION}"
+  python -m pip install torchcodec
+else
+  echo "✅ Reusing existing .venv (no upgrades)"
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
 fi
 
-# shellcheck disable=SC1091
-source .venv/bin/activate
+# ── HARD FAIL: ensure pip is the venv pip ────────────────────────────────────
+VENV_PREFIX="$(python -c 'import sys; print(sys.prefix)')"
+python -m pip -V | grep -q "$VENV_PREFIX" || {
+  echo "❌ pip is not using venv ($VENV_PREFIX)"
+  python -m pip -V
+  exit 1
+}
 
-# Sanity prints (helpful if TF wheels fail)
+# ── Sanity prints ────────────────────────────────────────────────────────────
 echo "python: $(which python)"
 echo "pip:    $(which pip)"
 python - <<'PY'
@@ -81,32 +113,52 @@ print("Python:", sys.version.replace("\n"," "))
 print("Arch:  ", platform.machine())
 PY
 
-# Ensure we’re on arm64 + supported Python (3.10/3.11)
+# ── Ensure we’re on arm64 + supported Python ─────────────────────────────────
 ARCH=$(python -c 'import platform; print(platform.machine())')
 PYVER=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
 if [[ "$ARCH" != "arm64" ]]; then
-  echo "❌ venv arch is $ARCH (needs arm64). Recreate with: rm -rf .venv && arch -arm64 $PYTHON_BIN -m venv .venv"
+  echo "❌ venv arch is $ARCH (needs arm64). Recreate with:"
+  echo "   rm -rf .venv && arch -arm64 $PYTHON_BIN -m venv .venv"
   exit 1
 fi
 case "$PYVER" in
-  3.10|3.11) : ;; # ok
+  3.10|3.11) : ;;
   *) echo "❌ Detected Python $PYVER. Use 3.10 or 3.11 for tensorflow-macos."
-     echo "   Try: brew install python@3.11 && rm -rf .venv && arch -arm64 /opt/homebrew/bin/python3.11 -m venv .venv"
      exit 1 ;;
 esac
 
-# ── deps (idempotent; always use the venv's pip via python -m pip) ────────────
-python -m pip install -U pip setuptools wheel >/dev/null
+# ── HARD FAIL: verify pinned versions (no silent drift) ──────────────────────
+python - <<PY
+import tensorflow as tf, keras, pkgutil, sys
+import google.protobuf
+import flatbuffers
 
-# --- versions (override at runtime if needed) ---
-TF_VERSION="${TF_VERSION:-2.16.2}"
-TF_METAL_VERSION="${TF_METAL_VERSION:-1.2.0}"
+expected = {
+  "tensorflow": "${TF_VERSION}",
+  "keras": "${KERAS_VERSION}",
+  "protobuf": "${PROTOBUF_VERSION}",
+  "flatbuffers": "${FLATBUFFERS_VERSION}",
+}
 
-# ── install PyTorch + torchcodec for HF audio decoding ------------------------
-# your error said torchcodec wanted torch 2.9.0, so install that first
-python -m pip install -q "torch==2.9.0"
-python -m pip install -q torchcodec
+actual = {
+  "tensorflow": tf.__version__,
+  "keras": keras.__version__,
+  "protobuf": google.protobuf.__version__,
+  "flatbuffers": flatbuffers.__version__,
+}
+
+bad = [(k, actual[k], expected[k]) for k in expected if actual[k] != expected[k]]
+if bad:
+  print("❌ Version drift detected:")
+  for k,a,e in bad:
+    print(f"  - {k}: {a} (expected {e})")
+  print("\nFix by rebuilding venv:")
+  print("  rm -rf .venv && arch -arm64 ${PYTHON_BIN} -m venv .venv && ./train_microwakeword_macos.sh ...")
+  sys.exit(1)
+
+print("✅ Pinned ML stack verified.")
+PY
 
 # tell HF to use torch backend, not soundfile
 export DATASETS_AUDIO_BACKEND=torch
