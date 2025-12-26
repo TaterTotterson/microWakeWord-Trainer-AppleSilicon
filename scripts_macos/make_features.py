@@ -19,7 +19,8 @@ impulse_paths = ["mit_rirs"]
 background_paths = ["fma_16k", "audioset_16k"]
 validate(impulse_paths + background_paths)
 
-clips = Clips(
+# Process TTS generated samples (default)
+clips_tts = Clips(
     input_directory="./generated_samples",
     file_pattern="*.wav",
     max_clip_duration_s=5,
@@ -27,6 +28,19 @@ clips = Clips(
     random_split_seed=10,
     split_count=0.1,
 )
+
+# Process personal recordings if available (optional)
+clips_personal = None
+if os.path.exists("./personal_samples") and any(Path("./personal_samples").glob("*.wav")):
+    clips_personal = Clips(
+        input_directory="./personal_samples",
+        file_pattern="*.wav",
+        max_clip_duration_s=5,
+        remove_silence=True,
+        random_split_seed=10,
+        split_count=0.1,
+    )
+    print("✅ Found personal samples, will create separate feature set")
 
 augmenter = Augmentation(
     augmentation_duration_s=3.2,
@@ -57,12 +71,13 @@ split_cfg = {
     "testing":    {"name": "test",       "repetition": 1, "slide_frames": 1},
 }
 
+# Process TTS samples
 for split, cfg in split_cfg.items():
     out_dir = out_root / split
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"🧪 Processing {split} …")
+    print(f"🧪 Processing {split} (TTS) …")
     spectros = SpectrogramGeneration(
-        clips=clips,
+        clips=clips_tts,
         augmenter=augmenter,
         slide_frames=cfg["slide_frames"],
         step_ms=10,
@@ -77,4 +92,24 @@ for split, cfg in split_cfg.items():
         verbose=True,
     )
 
+# Process personal samples if available
+if clips_personal is not None:
+    out_root_personal = Path("personal_augmented_features")
+    out_root_personal.mkdir(exist_ok=True)
+    for split, cfg in split_cfg.items():
+        out_dir = out_root_personal / split
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"🧪 Processing {split} (personal) …")
+        spectros = SpectrogramGeneration(
+            clips=clips_personal,
+            augmenter=augmenter,
+            slide_frames=cfg["slide_frames"],
+            step_ms=10,
+        )
+        RaggedMmap.from_generator(
+            out_dir=str(out_dir / "wakeword_mmap"),
+            sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
+            batch_size=100,
+            verbose=True,
+        )
 print("✅ Features ready.")
