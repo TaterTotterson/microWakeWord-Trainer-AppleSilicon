@@ -55,7 +55,7 @@ For Apple Silicon, it’s recommended to use the **multi-speaker** model:
 ./train_microwakeword_macos.sh "hey_phooey" 50000 100 \
   --piper-model piper-sample-generator/models/en_US-libritts_r-medium.pt
 
-## 🎤 Optional: Personal Voice Samples (Highly Recommended)
+## 🎤 Optional: Personal Voice Samples
 
 In addition to synthetic TTS samples, the trainer can optionally use your own real voice recordings to significantly improve accuracy for your voice and environment.
 
