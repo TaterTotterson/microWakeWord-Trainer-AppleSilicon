@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>microWakeWord AppleSilicon Trainer & Recorder</h1>
+  <h1>🎙️ microWakeWord AppleSilicon Trainer & Recorder</h1>
   <img width="990" height="582" alt="Screenshot 2026-01-15 at 10 02 28 PM" src="https://github.com/user-attachments/assets/335cb187-75e6-46f7-abb5-dfe2f3456b14" />
 </div>
 
@@ -41,8 +41,6 @@ git clone https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon.g
 cd microWakeWord-Trainer-AppleSilicon
 ```
 ---
-
-# 🎙️ microWakeWord Trainer (Local + Automated)
 
 ## 🚀 Option 1: Run the Web UI (Recommended)
 
