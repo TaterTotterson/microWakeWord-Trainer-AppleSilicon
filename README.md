@@ -9,14 +9,6 @@
 if they are missing. Homebrew itself must already be installed:
 https://brew.sh/
 
-## **Quick Start:**
-Clone the repo and enter the folder:
-```bash
-git clone https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon.git
-cd microWakeWord-Trainer-AppleSilicon
-```
-# 🎙️ microWakeWord Trainer (Local + Automated)
-
 This project lets you **create custom wake words** for Home Assistant Voice using a combination of:
 
 - **Local voice recordings** (your real voice, optional but recommended)
@@ -42,6 +34,16 @@ to get consistent pronunciation.
 The Web UI includes a **🔊 Test TTS** button for this reason.
 
 ---
+
+## **Clone Repo:**
+Clone the repo and enter the folder:
+```bash
+git clone https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon.git
+cd microWakeWord-Trainer-AppleSilicon
+```
+---
+
+# 🎙️ microWakeWord Trainer (Local + Automated)
 
 ## 🚀 Option 1: Run the Web UI (Recommended)
 
