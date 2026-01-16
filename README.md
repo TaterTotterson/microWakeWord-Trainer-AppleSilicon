@@ -1,6 +1,6 @@
 <div align="center">
+  <h1>microWakeWord Local Trainer & Recorder - Apple Silicon</h1>
   <img width="990" height="582" alt="Screenshot 2026-01-15 at 10 02 28 PM" src="https://github.com/user-attachments/assets/335cb187-75e6-46f7-abb5-dfe2f3456b14" />
-  <h1>microWakeWord Trainer Apple Silicon</h1>
 </div>
 
 > **Note:** The script will automatically install **ffmpeg** and **wget** via Homebrew
