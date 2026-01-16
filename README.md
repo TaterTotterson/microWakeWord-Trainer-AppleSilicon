@@ -124,7 +124,7 @@ This will:
 - Create/use `.venv`
 - Generate TTS samples
 - Train a wake word model
-- Output the final `.json` model file
+- Output the final model file
 
 ---
 
@@ -139,18 +139,6 @@ personal_samples/
 They are automatically included and weighted higher than TTS samples.
 
 No flags required — the script detects them automatically.
-
----
-
-## 📂 Output
-
-Final trained models are published to the configured repo path, for example:
-
-```
-microWakeWords/hey_tater.json
-```
-
-These can be referenced directly in ESPHome / Home Assistant Voice configs.
 
 ---
 
@@ -174,8 +162,3 @@ These can be referenced directly in ESPHome / Home Assistant Voice configs.
 | Headless / CI | Training script only |
 
 ---
-
-If you want, next good follow-ups would be:
-- Adding screenshots to the README
-- Adding a **“Request a Wake Word”** section for GitHub Issues
-- Packaging the recorder as a one-click app or Home Assistant add-on
