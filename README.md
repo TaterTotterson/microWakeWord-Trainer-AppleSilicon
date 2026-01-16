@@ -5,10 +5,6 @@
 
 ---
 
-> **Note:** The script will automatically install **ffmpeg** and **wget** via Homebrew
-if they are missing. Homebrew itself must already be installed:
-https://brew.sh/
-
 This project lets you **create custom wake words** for Home Assistant Voice using a combination of:
 
 - **Local voice recordings** (your real voice, optional but recommended)
@@ -34,6 +30,9 @@ to get consistent pronunciation.
 The Web UI includes a **🔊 Test TTS** button for this reason.
 
 ---
+> **Note:** The script will automatically install **ffmpeg** and **wget** via Homebrew
+if they are missing. Homebrew itself must already be installed:
+https://brew.sh/
 
 ## **Clone Repo:**
 Clone the repo and enter the folder:
