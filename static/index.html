@@ -261,7 +261,6 @@
   }
 
   function setLogTextAutoScroll(el, text) {
-    // Only force-scroll if user is already near the bottom.
     const stick = isNearBottom(el);
     el.textContent = text;
     if (stick) el.scrollTop = el.scrollHeight;
@@ -445,16 +444,16 @@
       fd.append("take_index", String(currentTake));
       fd.append("file", wavBlob, `take_${String(currentTake).padStart(2,"0")}.wav`);
 
-      const res = await api("/api/upload_take", { method:"POST", body: fd });
+      await api("/api/upload_take", { method:"POST", body: fd });
 
-      const line = document.createElement("div");
-      line.textContent = `✅ Saved ${res.saved_as}`;
-      $("takesList").appendChild(line);
+      // Keep the UI clean: show a single summary line instead of spamming entries
+      $("takesList").textContent = `Saved ${currentTake}/${takesPerSpeaker} takes for speaker ${currentSpeaker}/${speakersTotal}`;
 
       setPill($("status"), `Saved speaker ${currentSpeaker} take ${currentTake}/${takesPerSpeaker}`, "ok");
 
       // speaker transitions / completion
       if (currentTake >= takesPerSpeaker) {
+        // finished this speaker
         if (currentSpeaker >= speakersTotal) {
           setPill($("takeState"), "Done", "ok");
           setPill($("speakerState"), "All speakers done ✅", "ok");
@@ -465,12 +464,19 @@
           return;
         }
 
+        // move to next speaker but STOP and require manual Begin click
         currentSpeaker += 1;
         currentTake = 0;
         refreshUI();
-        setPill($("speakerState"), `Next speaker: ${currentSpeaker}/${speakersTotal}`, "warn");
-        setPill($("takeState"), "Listening…", "ok");
-        setPill($("status"), `Ready for speaker ${currentSpeaker}. Say the wake word…`, "ok");
+
+        setPill($("speakerState"), `Speaker ${currentSpeaker - 1} complete ✅`, "ok");
+        setPill($("takeState"), "Paused", "warn");
+        setPill($("status"), `Ready for speaker ${currentSpeaker}. Click Begin recording.`, "warn");
+
+        isRunning = false;
+        $("beginBtn").disabled = false;
+
+        await stopMicNow();
         return;
       }
 
@@ -578,7 +584,6 @@
         const lines = tr.log_lines || [];
         const txt = lines.length ? lines.join("\n") : "(no output yet)";
 
-        // ✅ auto-scroll behavior here
         setLogTextAutoScroll(logEl, txt);
 
         if (!tr.running) {
@@ -617,8 +622,10 @@
 
       session = data;
 
+      // NEW session should reset state
       currentSpeaker = 1;
       currentTake = 0;
+
       $("takesList").textContent = "";
       $("trainLog").textContent = "(no training started)";
       refreshUI();
@@ -663,8 +670,7 @@
       return;
     }
 
-    currentSpeaker = 1;
-    currentTake = 0;
+    // Do NOT reset speaker/take here — Begin should resume the current speaker
     $("takesList").textContent = "";
     refreshUI();
 
