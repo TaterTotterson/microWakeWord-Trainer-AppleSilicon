@@ -13,87 +13,169 @@ Clone the repo and enter the folder:
 git clone https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon.git
 cd microWakeWord-Trainer-AppleSilicon
 ```
-### Train with the default settings (wake word = "hey_tater")
-```bash
-./train_microwakeword_macos.sh "hey_tater"
-```
-This will train a model for `hey_tater` and produce `hey_tater.tflite` + `hey_tater.json`
-ready for ESPHome integration.
+# 🎙️ microWakeWord Trainer (Local + Automated)
+
+This project lets you **create custom wake words** for Home Assistant Voice using a combination of:
+
+- **Local voice recordings** (your real voice, optional but recommended)
+- **Automatically generated TTS samples**
+- A **fully automated training pipeline**
+
+You can either:
+1. Use the **local Web UI** to record real voice samples and auto-train  
+2. Or run the **training script directly** (TTS-only or with pre-existing samples)
 
 ---
 
-### Command Usage
+## 🧪 Important First Step — Test Your Wake Word with TTS
+
+Before recording or training anything:
+
+> **Test your wake word with text-to-speech first.**
+
+Some words or names are pronounced differently by TTS engines.  
+You may need to **spell the word creatively** (for example: `tay-ter` instead of `tater`)
+to get consistent pronunciation.
+
+The Web UI includes a **🔊 Test TTS** button for this reason.
+
+---
+
+## 🚀 Option 1: Run the Web UI (Recommended)
+
+The Web UI guides users through:
+- Entering a wake word
+- Testing TTS pronunciation
+- Recording real voice samples (auto-start / auto-stop)
+- Supporting **multiple speakers** (family members)
+- Automatically starting training when recordings are complete
+
+### ▶️ Start the Recorder Web UI
+
+From the project root:
+
 ```bash
-./train_microwakeword_macos.sh [WAKE_WORD] [MAX_TTS_SAMPLES] [BATCH_SIZE] [--piper-model path.pt] [...]
+./run_recorder_macos.sh
 ```
-| Argument              | Default     | Description |
-|----------------------|-------------|-------------|
-| WAKE_WORD            | hey_tater  | The phrase to train on. Will be used for file naming (`<wake_word>.tflite`, `<wake_word>.json`). |
-| MAX_TTS_SAMPLES      | 50000       | Number of synthetic TTS samples to generate (skipped if already present). |
-| BATCH_SIZE           | 100         | TTS batch size for Piper sample generation. Higher = faster, but uses more memory. |
-| --piper-model PATH   | *(optional)*| Path to a custom Piper voice model (.pt or .onnx). Can be repeated for multi-speaker datasets. |
 
-Examples:
+What this does:
+- Creates and manages `.recorder-venv`
+- Installs all required dependencies (once)
+- Starts a local FastAPI server with the recording UI
 
-### Train with a custom wake word (uses defaults for TTS sample count + batch size)
+Then open your browser to:
+
+```
+http://127.0.0.1:8789
+```
+
+---
+
+### 🎙️ Recording Flow
+
+1. Enter your wake word
+2. Test pronunciation with **Test TTS**
+3. Choose:
+   - Number of speakers (e.g. family members)
+   - Takes per speaker (default: 10)
+4. Click **Begin recording**
+5. Speak naturally — recording:
+   - Starts when you talk
+   - Stops automatically after silence
+6. Repeat for each speaker
+
+Files are saved automatically to:
+
+```
+personal_samples/
+  speaker01_take01.wav
+  speaker01_take02.wav
+  speaker02_take01.wav
+  ...
+```
+
+> ⚠️ The training pipeline automatically detects **any `.wav` files** in
+> `personal_samples/` and gives them extra weight over TTS samples.
+
+---
+
+### 🧠 Automatic Training
+
+Once **all recordings are finished**:
+- The microphone is stopped
+- Training starts automatically
+- Live training logs stream into the Web UI
+
+Reloading the page **does NOT interrupt training** — it continues in the background.
+
+---
+
+## 🧪 Option 2: Run Training Script Only (No Web UI)
+
+If you don’t want to record real voice samples, or you already have them, you can run training directly.
+
+### ▶️ Basic Training (TTS-only)
+
 ```bash
 ./train_microwakeword_macos.sh "hey_tater"
 ```
-### Train with fewer samples (faster)
-```bash
-./train_microwakeword_macos.sh "ok_mango" 20000
+
+This will:
+- Create/use `.venv`
+- Generate TTS samples
+- Train a wake word model
+- Output the final `.json` model file
+
+---
+
+### 🎙️ Training with Personal Voice Samples
+
+If **any `.wav` files exist** in:
+
 ```
-### Train with a custom batch size (controls Piper generation speed/memory usage)
-```bash
-./train_microwakeword_macos.sh "hey_robot" 50000 256
+personal_samples/
 ```
-### Train with a Custom Piper Voice
 
-You can specify a Piper voice to generate samples for your wake word.  
-For Apple Silicon, it’s recommended to use the **multi-speaker** model:
+They are automatically included and weighted higher than TTS samples.
 
-./train_microwakeword_macos.sh "hey_phooey" 50000 100 \
-  --piper-model piper-sample-generator/models/en_US-libritts_r-medium.pt
+No flags required — the script detects them automatically.
 
-## 🎤 Optional: Personal Voice Samples
+---
 
-In addition to synthetic TTS samples, the trainer can optionally use your own real voice recordings to significantly improve accuracy for your voice and environment.
+## 📂 Output
 
-### How it works
-- If a folder named personal_samples/ exists and contains .wav files, the trainer will:
-  - Automatically extract features from those recordings
-  - Include them during training alongside the synthetic TTS data
-  - Up-weight your personal samples during training for better real-world performance
+Final trained models are published to the configured repo path, for example:
 
-No extra flags or configuration are required — it is detected automatically.
+```
+microWakeWords/hey_tater.json
+```
 
-### How to use it
-1. Create a folder in the repo root:
-   mkdir personal_samples
+These can be referenced directly in ESPHome / Home Assistant Voice configs.
 
-2. Record yourself saying the wake word naturally and save the files as .wav:
-   personal_samples/
-     hey_tater_01.wav
-     hey_tater_02.wav
-     hey_tater_03.wav
-     ...
+---
 
-3. Run the training script as normal:
-   ./train_microwakeword_macos.sh "hey_tater"
+## ⚠️ Notes
 
-If personal samples are found, you’ll see a message during training indicating they are being included.
+- Please use **one wake word per training run**
+- Avoid punctuation or emojis in wake words
+- Training runs **sequentially**
+- Multiple speakers improve real-world detection accuracy
+- Page reloads do **not** interrupt training
 
-### Recording tips
-- 10–30 recordings is usually enough to see a noticeable improvement
-- Vary distance, volume, and tone slightly
-- Record in the same environment where the wake word will be used (room noise matters)
-- Use 16-bit WAV files if possible (most recorders do this by default)
+---
 
-Notes:
-- `en_US-libritts_r-medium.pt` is a multi-speaker model and will automatically generate varied voices, making your model more robust.
-- `.pt` voices use PyTorch + Metal (GPU) on Apple Silicon for maximum speed.
-- If no `--piper-model` is provided, `en_US-libritts_r-medium.pt` is used by default.
+## 🧩 When to Use Each Mode
 
-> **Tip:** `BATCH_SIZE` only affects Piper TTS generation — higher values generate samples faster but use more memory.  
-> **Tip:** If you rerun with the same wake word and sample count, it will **skip TTS generation** and use your cached clips, making retraining much faster.
+| Use case | Recommended path |
+|--------|------------------|
+| Best accuracy | Web UI + real voice recordings |
+| Quick testing | Training script only |
+| Family / shared device | Web UI with multiple speakers |
+| Headless / CI | Training script only |
 
+---
+
+If you want, next good follow-ups would be:
+- Adding screenshots to the README
+- Adding a **“Request a Wake Word”** section for GitHub Issues
+- Packaging the recorder as a one-click app or Home Assistant add-on
