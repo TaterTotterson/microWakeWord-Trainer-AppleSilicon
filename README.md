@@ -16,20 +16,6 @@ You can either:
 2. Or run the **training script directly** (TTS-only or with pre-existing samples)
 
 ---
-
-## 🧪 Important First Step — Test Your Wake Word with TTS
-
-Before recording or training anything:
-
-> **Test your wake word with text-to-speech first.**
-
-Some words or names are pronounced differently by TTS engines.  
-You may need to **spell the word creatively** (for example: `tay-ter` instead of `tater`)
-to get consistent pronunciation.
-
-The Web UI includes a **🔊 Test TTS** button for this reason.
-
----
 > **Note:** The script will automatically install **ffmpeg** and **wget** via Homebrew
 if they are missing. Homebrew itself must already be installed:
 https://brew.sh/
