@@ -6,6 +6,7 @@
 
 import os
 import subprocess
+import tarfile
 from pathlib import Path
 import numpy as np
 import scipy.io.wavfile
@@ -196,5 +197,87 @@ else:
     if fma_bad:
         Path("fma_corrupted_files.log").write_text("\n".join(fma_bad))
     print(f"✅ FMA complete ({ok} ok, {len(fma_bad)} failed)")
+
+# ============================================================
+# WHAM_noise (resample to 16 kHz mono, skip bad files)
+# ============================================================
+print("\n=== WHAM noise ===")
+wham_zip_dir = Path("wham"); wham_zip_dir.mkdir(exist_ok=True)
+wham_out = Path("wham_16k"); wham_out.mkdir(exist_ok=True)
+
+if any(wham_out.rglob("*.wav")):
+    print("✅ wham_16k exists; skipping.")
+else:
+    zipname = "wham_noise.zip"
+    zipurl = "https://my-bucket-a8b4b49c25c811ee9a7e8bba05fa24c7.s3.amazonaws.com/wham_noise.zip"
+    zipout = wham_zip_dir / zipname
+
+    if not zipout.exists():
+        print(f"⬇️ {zipname}")
+        rc = sh(f"wget -q -O '{zipout}' '{zipurl}'")
+        if rc == 0:
+            print(f"📦 Unzipping {zipname}...")
+            rc = sh(f"cd wham && unzip -q '{zipname}'")
+
+    # Find all wav files in the wham directory
+    wavs = list(wham_zip_dir.rglob("*.wav"))
+    print(f"WHAM WAV count: {len(wavs)}")
+
+    corrupt = []
+    for p in tqdm(wavs, desc="WHAM→16k WAV"):
+        try:
+            y, _ = librosa.load(p, sr=16000, mono=True)
+            if y.size == 0:
+                raise ValueError("empty audio")
+            write_wav(wham_out / (p.stem + ".wav"), y, 16000)
+        except Exception as e:
+            corrupt.append(f"{p}:{e}")
+
+    if corrupt:
+        Path("wham_corrupted_files.log").write_text("\n".join(corrupt))
+    print(f"✅ WHAM complete (handled {len(corrupt)} corrupt files)")
+
+# ============================================================
+# CHiME-Home (resample to 16 kHz mono, skip bad files)
+# ============================================================
+print("\n=== CHiME-Home ===")
+chime_tar_dir = Path("chime"); chime_tar_dir.mkdir(exist_ok=True)
+chime_out = Path("chime_16k"); chime_out.mkdir(exist_ok=True)
+
+if any(chime_out.rglob("*.wav")):
+    print("✅ chime_16k exists; skipping.")
+else:
+    tar_filename = "chime_home.tar.gz"
+    tar_url = "https://archive.org/download/chime-home/chime_home.tar.gz"
+    tar_path = chime_tar_dir / tar_filename
+
+    if not tar_path.exists():
+        print(f"Downloading {tar_filename}...")
+        rc = sh(f"wget -O '{tar_path}' '{tar_url}'")
+
+    print("Extracting files...")
+    with tarfile.open(tar_path, 'r:gz') as tar:
+        tar.extractall(path=chime_tar_dir)
+
+    # Remove the tar file to save space
+    tar_path.unlink()
+
+    # Find all wav files in the chime directory (*.48kHz.wav format)
+    wavs = list(chime_tar_dir.rglob("*.48kHz.wav"))
+    print(f"CHiME WAV count: {len(wavs)}")
+
+    corrupt = []
+    for p in tqdm(wavs, desc="CHiME→16k WAV"):
+        try:
+            y, _ = librosa.load(p, sr=16000, mono=True)
+            if y.size == 0:
+                raise ValueError("empty audio")
+            write_wav(chime_out / (p.stem + ".wav"), y, 16000)
+        except Exception as e:
+            corrupt.append(f"{p}:{e}")
+
+    if corrupt:
+        Path("chime_corrupted_files.log").write_text("\n".join(corrupt))
+    print(f"✅ CHiME complete (handled {len(corrupt)} corrupt files)")
 
 print("\n✅ Dataset prep complete!")

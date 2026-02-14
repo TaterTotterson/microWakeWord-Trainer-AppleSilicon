@@ -13,10 +13,16 @@ def validate(paths):
     for p in paths:
         if not os.path.exists(p):
             raise SystemExit(f"❌ Missing directory: {p}. Run dataset prep first.")
+    print(f"✅ Validated all {len(paths)} dataset directories")
 
 
 impulse_paths = ["mit_rirs"]
-background_paths = ["fma_16k", "audioset_16k"]
+background_paths = [
+    "wham_16k",
+    "chime_16k",
+    "fma_16k",
+    "audioset_16k",
+]
 validate(impulse_paths + background_paths)
 
 # Process TTS generated samples (default)
