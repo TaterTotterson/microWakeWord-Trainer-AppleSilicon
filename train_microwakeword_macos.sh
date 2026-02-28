@@ -178,7 +178,7 @@ export DATASETS_AUDIO_BACKEND=torch
 # Other deps (best-effort)
 "$PY" -m pip install -q "git+https://github.com/puddly/pymicro-features@puddly/minimum-cpp-version" \
                            "git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f" || true
-"$PY" -m pip install -q datasets librosa scipy numpy tqdm pyyaml requests ipython jupyter || true
+"$PY" -m pip install -q datasets librosa scipy numpy tqdm pyyaml requests ipython jupyter silero-vad || true
 
 # microWakeWord source (editable)
 if [[ ! -d "micro-wake-word" ]]; then
@@ -281,16 +281,19 @@ fi
 # ── (C) pull/prepare augmentation datasets (RIR, Audioset, FMA) ──────────────
 "$PY" scripts_macos/prepare_datasets.py
 
-# ── (D) build augmenter + spectrogram feature mmaps ───────────────────────────
+# ── (D) trim silence from personal samples, if any exists
+"$PY" scripts_macos/trim_silence.py
+
+# ── (E) build augmenter + spectrogram feature mmaps ───────────────────────────
 "$PY" scripts_macos/make_features.py
 
-# ── (E) download precomputed negative spectrograms ────────────────────────────
+# ── (F) download precomputed negative spectrograms ────────────────────────────
 "$PY" scripts_macos/fetch_negatives.py
 
-# ── (F) write training YAML (tuned for your notebook) ────────────────────────
+# ── (G) write training YAML (tuned for your notebook) ────────────────────────
 "$PY" scripts_macos/write_training_yaml.py
 
-# ── (G) train + export (Metal TF) ────────────────────────────────────────────
+# ── (H) train + export (Metal TF) ────────────────────────────────────────────
 "$PY" -m microwakeword.model_train_eval \
   --training_config=training_parameters.yaml \
   --train 1 \
@@ -310,7 +313,7 @@ fi
   --first_conv_kernel_size 5 \
   --stride 2
 
-# ── (H) package artifacts (name by wake word) ─────────────────────────────────
+# ── (I) package artifacts (name by wake word) ─────────────────────────────────
 "$PY" - <<'PY'
 import os, re, shutil, json
 from pathlib import Path
