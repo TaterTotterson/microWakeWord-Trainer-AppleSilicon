@@ -14,6 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = ROOT_DIR / "static"
 PERSONAL_DIR = ROOT_DIR / "personal_samples"
 TRAIN_SCRIPT = os.environ.get("TRAIN_SCRIPT", str(ROOT_DIR / "train_microwakeword_macos.sh"))
+DEFAULT_LANGUAGE = os.environ.get("MWW_LANGUAGE", "en")
 
 TAKES_PER_SPEAKER_DEFAULT = int(os.environ.get("REC_TAKES_PER_SPEAKER", "10"))
 SPEAKERS_TOTAL_DEFAULT = int(os.environ.get("REC_SPEAKERS_TOTAL", "1"))
@@ -37,6 +38,7 @@ def safe_name(raw: str) -> str:
 STATE: Dict[str, Any] = {
     "raw_phrase": None,
     "safe_word": None,
+    "language": DEFAULT_LANGUAGE,
 
     # multi-speaker
     "speakers_total": SPEAKERS_TOTAL_DEFAULT,
@@ -76,7 +78,8 @@ def _append_train_log(line: str):
             del buf[: len(buf) - 250]
 
 
-def _run_training_background(safe_word: str):
+def _run_training_background(safe_word: str, language: str):
+    language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
     cmd = ["bash", TRAIN_SCRIPT, safe_word]
 
     with STATE_LOCK:
@@ -88,9 +91,12 @@ def _run_training_background(safe_word: str):
         STATE["training"]["log_path"] = log_path
 
     _append_train_log(f"→ Running: {' '.join(cmd)}")
+    _append_train_log(f"→ Language: {language}")
 
     try:
         with open(log_path, "w", encoding="utf-8") as lf:
+            env = os.environ.copy()
+            env["MWW_LANGUAGE"] = language
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(ROOT_DIR),
@@ -98,6 +104,7 @@ def _run_training_background(safe_word: str):
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=env,
             )
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -143,6 +150,7 @@ def start_session(payload: Dict[str, Any]):
 
     speakers_total = int(payload.get("speakers_total") or SPEAKERS_TOTAL_DEFAULT)
     takes_per_speaker = int(payload.get("takes_per_speaker") or TAKES_PER_SPEAKER_DEFAULT)
+    language = (payload.get("language") or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
 
     speakers_total = max(1, min(10, speakers_total))
     takes_per_speaker = max(1, min(50, takes_per_speaker))
@@ -150,6 +158,7 @@ def start_session(payload: Dict[str, Any]):
     with STATE_LOCK:
         STATE["raw_phrase"] = raw
         STATE["safe_word"] = safe
+        STATE["language"] = language
         STATE["speakers_total"] = speakers_total
         STATE["takes_per_speaker"] = takes_per_speaker
         STATE["takes_received"] = 0
@@ -163,6 +172,7 @@ def start_session(payload: Dict[str, Any]):
         "ok": True,
         "raw_phrase": raw,
         "safe_word": safe,
+        "language": language,
         "speakers_total": speakers_total,
         "takes_per_speaker": takes_per_speaker,
         "takes_total": speakers_total * takes_per_speaker,
@@ -176,6 +186,7 @@ def get_session():
             "ok": True,
             "raw_phrase": STATE["raw_phrase"],
             "safe_word": STATE["safe_word"],
+            "language": STATE["language"],
             "speakers_total": STATE["speakers_total"],
             "takes_per_speaker": STATE["takes_per_speaker"],
             "takes_received": STATE["takes_received"],
@@ -225,9 +236,13 @@ async def upload_take(
 
 
 @app.post("/api/train")
-def train_now():
+def train_now(payload: Dict[str, Any] = None):
+    payload = payload or {}
+    allow_no_personal = bool(payload.get("allow_no_personal", False))
+
     with STATE_LOCK:
         safe_word = STATE["safe_word"]
+        language = (STATE.get("language") or DEFAULT_LANGUAGE)
         takes_received = int(STATE["takes_received"])
         speakers_total = int(STATE["speakers_total"])
         takes_per_speaker = int(STATE["takes_per_speaker"])
@@ -241,16 +256,45 @@ def train_now():
     if not safe_word:
         return JSONResponse({"ok": False, "error": "No active session"}, status_code=400)
 
-    if takes_received < max(1, min(3, takes_total)):
-        return JSONResponse({"ok": False, "error": f"Not enough takes yet ({takes_received}/{takes_total})."}, status_code=400)
+    min_required = max(1, min(3, takes_total))
+
+    if takes_received == 0 and not allow_no_personal:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"No personal voice samples recorded (0/{takes_total}).",
+                "code": "NO_PERSONAL_SAMPLES",
+                "message": "You can train without personal voices, or record samples first.",
+                "takes_total": takes_total,
+            },
+            status_code=400,
+        )
+
+    if 0 < takes_received < min_required:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"Not enough takes yet ({takes_received}/{takes_total}).",
+                "code": "NOT_ENOUGH_TAKES",
+                "min_required": min_required,
+                "takes_total": takes_total,
+            },
+            status_code=400,
+        )
 
     if not Path(TRAIN_SCRIPT).exists():
         return JSONResponse({"ok": False, "error": f"TRAIN_SCRIPT not found: {TRAIN_SCRIPT}"}, status_code=500)
 
-    t = threading.Thread(target=_run_training_background, args=(safe_word,), daemon=True)
+    t = threading.Thread(target=_run_training_background, args=(safe_word, language), daemon=True)
     t.start()
 
-    return {"ok": True, "started": True, "safe_word": safe_word}
+    return {
+        "ok": True,
+        "started": True,
+        "safe_word": safe_word,
+        "personal_samples_used": takes_received >= min_required,
+        "allow_no_personal": allow_no_personal,
+    }
 
 
 @app.get("/api/train_status")

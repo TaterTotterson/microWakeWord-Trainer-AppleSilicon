@@ -3,6 +3,7 @@ import shutil, json, sys, os
 from pathlib import Path
 
 wake = sys.argv[1] if len(sys.argv) > 1 else "hey_norman"
+language = (sys.argv[2] if len(sys.argv) > 2 else os.environ.get("MWW_LANGUAGE", "en")).strip().lower() or "en"
 src = Path("trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite")
 dst = Path("stream_state_internal_quant.tflite")
 if not src.exists():
@@ -16,7 +17,7 @@ meta = {
   "author": "master phooey",
   "website": "https://github.com/MasterPhooey/MicroWakeWord-Trainer-Docker",
   "model": "stream_state_internal_quant.tflite",
-  "trained_languages": ["en"],
+  "trained_languages": [language],
   "version": 2,
   "micro": {
     "probability_cutoff": 0.97,

@@ -3,9 +3,10 @@
 # One-shot: setup (idempotent) + run pipeline on Apple Silicon (macOS).
 # Usage:
 #   ./train_microwakeword_macos.sh "hey_tater" 50000 100 \
+#       --language en \
 #       --piper-model /path/to/voice1.onnx --piper-model /path/to/voice2.pt
 #
-# If no --piper-model is given, we auto-download a default .pt voice.
+# If no --piper-model is given, we use language-aware defaults.
 
 set -euo pipefail
 
@@ -14,14 +15,25 @@ MAX_TTS_SAMPLES="${2:-50000}"
 BATCH_SIZE="${3:-100}"
 [[ $# -ge 3 ]] && shift 3 || shift $#
 
-# Collect any --piper-model flags (repeatable)
+# Default language can be overridden by --language or MWW_LANGUAGE
+LANGUAGE="${MWW_LANGUAGE:-en}"
+
+# Collect optional flags
 PIPER_MODELS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --piper-model) PIPER_MODELS+=("$2"); shift 2 ;;
+    --language) LANGUAGE="${2:-}"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
+
+LANGUAGE="$(echo "${LANGUAGE}" | tr '[:upper:]' '[:lower:]')"
+if [[ -z "$LANGUAGE" ]]; then
+  LANGUAGE="en"
+fi
+export MWW_LANGUAGE="$LANGUAGE"
+echo "🌐 Training language: $LANGUAGE"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
@@ -204,19 +216,36 @@ if not any(d.device_type == "GPU" for d in devs):
 PY
 
 # ── export for inline python ──────────────────────────────────────────────────
-export TARGET_WORD MAX_TTS_SAMPLES BATCH_SIZE
+export TARGET_WORD MAX_TTS_SAMPLES BATCH_SIZE LANGUAGE MWW_LANGUAGE
 
-# ── Ensure at least one model is provided (auto-fetch default if none) ────────
+# ── Ensure at least one model is provided (language-aware default) ────────────
 DEFAULT_MODEL_PT="piper-sample-generator/models/en_US-libritts_r-medium.pt"
 if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
-  echo "ℹ️  No --piper-model provided; using default voice:"
-  echo "    $DEFAULT_MODEL_PT"
-  mkdir -p "$(dirname "$DEFAULT_MODEL_PT")"
-  if [[ ! -f "$DEFAULT_MODEL_PT" ]]; then
-    wget -q -O "$DEFAULT_MODEL_PT" \
-      "https://github.com/TaterTotterson/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt"
+  if [[ "$LANGUAGE" == "en" ]]; then
+    echo "ℹ️  No --piper-model provided; using default English voice:"
+    echo "    $DEFAULT_MODEL_PT"
+    mkdir -p "$(dirname "$DEFAULT_MODEL_PT")"
+    if [[ ! -f "$DEFAULT_MODEL_PT" ]]; then
+      wget -q -O "$DEFAULT_MODEL_PT" \
+        "https://github.com/TaterTotterson/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt"
+    fi
+    PIPER_MODELS=("$DEFAULT_MODEL_PT")
+  else
+    shopt -s nullglob
+    language_voice_models=(piper-sample-generator/voices/"${LANGUAGE}"_*.onnx)
+    shopt -u nullglob
+    if [[ ${#language_voice_models[@]} -eq 0 ]]; then
+      echo "❌ No Piper ONNX voice models found for language '${LANGUAGE}'."
+      echo "   Expected files matching: piper-sample-generator/voices/${LANGUAGE}_*.onnx"
+      echo "   Add voice files or choose English (en)."
+      exit 1
+    fi
+    echo "ℹ️  No --piper-model provided; using ${#language_voice_models[@]} voice model(s) for language '${LANGUAGE}':"
+    for vf in "${language_voice_models[@]}"; do
+      echo "    $vf"
+    done
+    PIPER_MODELS=("${language_voice_models[@]}")
   fi
-  PIPER_MODELS=("$DEFAULT_MODEL_PT")
 fi
 
 # ── Pass models to Python via env ─────────────────────────────────────────────
@@ -319,6 +348,7 @@ import os, re, shutil, json
 from pathlib import Path
 
 target = os.environ.get("TARGET_WORD", "wakeword")
+language = os.environ.get("MWW_LANGUAGE", "en")
 safe = re.sub(r'[^a-z0-9_]+', '', re.sub(r'\s+', '_', target.lower()))
 if not safe:
     safe = "wakeword"
@@ -335,7 +365,7 @@ meta = {
   "author": "Tater Totterson",
   "website": "https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon",
   "model": f"{safe}.tflite",
-  "trained_languages": ["en"],
+  "trained_languages": [language],
   "version": 2,
   "micro": {
     "probability_cutoff": 0.97,
