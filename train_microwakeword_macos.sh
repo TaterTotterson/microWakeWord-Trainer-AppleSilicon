@@ -227,7 +227,7 @@ if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
     mkdir -p "$(dirname "$DEFAULT_MODEL_PT")"
     if [[ ! -f "$DEFAULT_MODEL_PT" ]]; then
       wget -q -O "$DEFAULT_MODEL_PT" \
-        "https://github.com/TaterTotterson/piper-sample-generator/releases/download/v2.0.0/en_US-libritts_r-medium.pt"
+        "https://github.com/TaterTotterson/piper-sample-generator/releases/download/models/en_US-libritts_r-medium.pt"
     fi
     PIPER_MODELS=("$DEFAULT_MODEL_PT")
   else

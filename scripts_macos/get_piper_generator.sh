@@ -46,7 +46,7 @@ mkdir -p "$MODELS_DIR" "$VOICES_DIR"
 
 # English multi-speaker model (used by --language=en)
 EN_MODEL_NAME="en_US-libritts_r-medium.pt"
-EN_MODEL_URL="https://github.com/TaterTotterson/piper-sample-generator/releases/download/v2.0.0/${EN_MODEL_NAME}"
+EN_MODEL_URL="https://github.com/TaterTotterson/piper-sample-generator/releases/download/models/${EN_MODEL_NAME}"
 if [[ ! -f "${MODELS_DIR}/${EN_MODEL_NAME}" ]]; then
   echo "⬇️ Downloading ${EN_MODEL_NAME}…"
   download_file "${EN_MODEL_URL}" "${MODELS_DIR}/${EN_MODEL_NAME}"
