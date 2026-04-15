@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_recorder_macos.sh
 #
-# One-command launcher for the local mic recorder UI:
+# One-command launcher for the local training UI:
 # - creates/uses .recorder-venv
 # - installs pinned dependencies once
 # - runs uvicorn from the venv (never uses global /opt/homebrew/bin/uvicorn)
@@ -25,13 +25,13 @@ FASTAPI_VERSION="${REC_FASTAPI_VERSION:-0.115.6}"
 UVICORN_VERSION="${REC_UVICORN_VERSION:-0.30.6}"
 PY_MULTIPART_VERSION="${REC_PY_MULTIPART_VERSION:-0.0.9}"
 
-echo "🎙️ microWakeWord Recorder (local)"
+echo "🎙️ microWakeWord Trainer UI (local)"
 echo "→ ROOT: $ROOT_DIR"
 echo "→ VENV: $VENV_DIR"
 
 # Create venv if missing
 if [[ ! -x "$PY" ]]; then
-  echo "🧹 Creating recorder venv: $VENV_DIR"
+  echo "🧹 Creating trainer UI venv: $VENV_DIR"
   python3 -m venv "$VENV_DIR"
 fi
 
@@ -41,7 +41,7 @@ source "$VENV_DIR/bin/activate"
 
 # Install pinned deps once
 if [[ ! -f "$PIN_FILE" ]]; then
-  echo "🧹 Fresh recorder venv → installing pinned dependencies"
+  echo "🧹 Fresh trainer UI venv → installing pinned dependencies"
   $PIP install -U pip setuptools wheel
 
   # Core server deps
@@ -71,5 +71,5 @@ if [[ ! -x "$UVICORN" ]]; then
   exit 1
 fi
 
-echo "→ Launching: $UVICORN recorder_server:app --host $HOST --port $PORT"
-exec "$UVICORN" recorder_server:app --host "$HOST" --port "$PORT"
+echo "→ Launching: $UVICORN trainer_server:app --host $HOST --port $PORT"
+exec "$UVICORN" trainer_server:app --host "$HOST" --port "$PORT"

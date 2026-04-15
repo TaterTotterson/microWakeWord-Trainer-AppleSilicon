@@ -289,11 +289,15 @@ LENGTH_SCALES = ["0.85", "0.95", "1.0", "1.05", "1.15"]
 
 cmd = [
     sys.executable,
-    "piper-sample-generator/generate_samples.py",
+    "scripts_macos/run_generator_with_progress.py",
+    "--generator", "piper-sample-generator/generate_samples.py",
+    "--output-dir", OUT_DIR,
+    "--max-samples", str(MAX_SAMPLES),
+    "--",
     TARGET,
     "--max-samples", str(MAX_SAMPLES),
-    "--batch-size",  str(BATCH),
-    "--output-dir",  OUT_DIR,
+    "--batch-size", str(BATCH),
+    "--output-dir", OUT_DIR,
     "--length-scales", *LENGTH_SCALES,
     *model_flags,
 ]
