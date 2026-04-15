@@ -1,5 +1,6 @@
 <div align="center">
   <h1>microWakeWord Apple Silicon Trainer UI</h1>
+  <img width="800" alt="Screenshot 2026-04-14 at 11 02 06 PM" src="https://github.com/user-attachments/assets/477fb140-fb7f-4ca7-9a03-3db938c5a826" />
 </div>
 
 Train custom microWakeWord models on Apple Silicon with:
