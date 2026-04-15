@@ -1,151 +1,160 @@
 <div align="center">
-  <h1>🎙️ microWakeWord AppleSilicon Trainer & Recorder</h1>
-  <img width="990" height="582" alt="Screenshot 2026-01-15 at 10 02 28 PM" src="https://github.com/user-attachments/assets/335cb187-75e6-46f7-abb5-dfe2f3456b14" />
+  <h1>microWakeWord Apple Silicon Trainer UI</h1>
 </div>
 
----
+Train custom microWakeWord models on Apple Silicon with:
 
-This project lets you **create custom wake words** for Home Assistant Voice using a combination of:
+- uploaded personal voice samples
+- automatically generated Piper TTS samples
+- a local web UI with live training logs
 
-- **Local voice recordings** (your real voice, optional but recommended)
-- **Automatically generated TTS samples**
-- A **fully automated training pipeline**
-
-You can either:
-1. Use the **local Web UI** to record real voice samples and auto-train  
-2. Or run the **training script directly** (TTS-only or with pre-existing samples)
+The project no longer records audio in the browser. Instead, you upload your own audio files, the app validates or converts them into the required training format, and training runs from the same UI.
 
 ---
-> **Note:** The script will automatically install **ffmpeg** and **wget** via Homebrew
-if they are missing. Homebrew itself must already be installed:
-https://brew.sh/
 
-## **Clone Repo:**
-Clone the repo and enter the folder:
+## What The UI Does
+
+- Start a session for a wake word
+- Test TTS pronunciation
+- Upload one or many personal voice samples
+- Automatically normalize uploads to `16 kHz / mono / 16-bit PCM WAV`
+- Train with or without personal samples
+- Show training output in a popup console window
+
+Personal samples are optional. If you upload none, the trainer can still run with TTS-only data after confirmation.
+
+---
+
+## Clone The Repo
+
 ```bash
 git clone https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon.git
 cd microWakeWord-Trainer-AppleSilicon
 ```
+
 ---
 
-## 🚀 Option 1: Run the Web UI (Recommended)
-
-The Web UI guides users through:
-- Entering a wake word
-- Testing TTS pronunciation
-- Recording real voice samples (auto-start / auto-stop)
-- Supporting **multiple speakers** (family members)
-- Automatically starting training when recordings are complete
-
-### ▶️ Start the Recorder Web UI
-
-From the project root:
+## Run The Web UI
 
 ```bash
 ./run_recorder_macos.sh
 ```
 
 What this does:
-- Creates and manages `.recorder-venv`
-- Installs all required dependencies (once)
-- Starts a local FastAPI server with the recording UI
 
-Then open your browser to:
+- creates or reuses `.recorder-venv`
+- installs the UI server dependencies once
+- launches the FastAPI app locally
 
-```
+Then open:
+
+```text
 http://127.0.0.1:8789
 ```
 
 ---
 
-### 🎙️ Recording Flow
+## Personal Samples
 
-1. Enter your wake word
-2. Test pronunciation with **Test TTS**
-3. Choose:
-   - Number of speakers (e.g. family members)
-   - Takes per speaker (default: 10)
-4. Click **Begin recording**
-5. Speak naturally — recording:
-   - Starts when you talk
-   - Stops automatically after silence
-6. Repeat for each speaker
+The UI accepts common audio formats such as:
 
-Files are saved automatically to:
+- WAV
+- MP3
+- M4A
+- FLAC
+- OGG
+- AAC
+- OPUS
+- WEBM
 
+Uploads are checked and, if needed, converted with `ffmpeg` into:
+
+```text
+16 kHz / mono / 16-bit PCM WAV
 ```
+
+Converted files are stored in:
+
+```text
 personal_samples/
-  speaker01_take01.wav
-  speaker01_take02.wav
-  speaker02_take01.wav
-  ...
 ```
 
-> ⚠️ The training pipeline automatically detects **any `.wav` files** in
-> `personal_samples/` and gives them extra weight over TTS samples.
+Notes:
+
+- samples are not auto-cleared when you start a new session
+- use the `Clear personal samples` button if you want to remove them
+- training can run with zero personal samples
 
 ---
 
-### 🧠 Automatic Training
+## Language Support
 
-Once **all recordings are finished**:
-- The microphone is stopped
-- Training starts automatically
-- Live training logs stream into the Web UI
+The language picker is dynamic.
 
-Reloading the page **does NOT interrupt training** — it continues in the background.
+- `en` is always available
+- non-English languages are populated from Piper voice metadata
+- when you start training with a non-English language, the trainer downloads all Piper ONNX voices for that selected language only
+- it does not download every language up front
+- already-downloaded voices are reused
+
+English stays on its existing dedicated generator model path. Non-English languages use Piper ONNX voices for the selected language family.
+
+If the upstream Piper catalog is unavailable, already-installed local voices can still be used.
 
 ---
 
-## 🧪 Option 2: Run Training Script Only (No Web UI)
+## Training Flow
 
-If you don’t want to record real voice samples, or you already have them, you can run training directly.
+1. Enter the wake word
+2. Optionally test pronunciation with `Test TTS`
+3. Optionally upload personal samples
+4. Click `Start training`
+5. Watch the popup console for:
+   - selected-language voice downloads when needed
+   - sample generation progress
+   - training progress and final status
 
-### ▶️ Basic Training (TTS-only)
+The console can be reopened with `Open console`.
+
+---
+
+## Training Script Only
+
+You can still run the Apple Silicon training pipeline directly:
 
 ```bash
 ./train_microwakeword_macos.sh "hey_tater"
 ```
 
-This will:
-- Create/use `.venv`
-- Generate TTS samples
-- Train a wake word model
-- Output the final model file
+If `personal_samples/*.wav` exists, those files are included automatically.
 
 ---
 
-### 🎙️ Training with Personal Voice Samples
+## Output Files
 
-If **any `.wav` files exist** in:
+Successful runs produce normalized output files such as:
 
-```
-personal_samples/
+```text
+output/<wake_word>.tflite
+output/<wake_word>.json
 ```
 
-They are automatically included and weighted higher than TTS samples.
-
-No flags required — the script detects them automatically.
+If a file with the same name already exists, the trainer keeps it by creating timestamped backup files first.
 
 ---
 
-## ⚠️ Notes
+## Notes
 
-- Please use **one wake word per training run**
-- Avoid punctuation or emojis in wake words
-- Training runs **sequentially**
-- Multiple speakers improve real-world detection accuracy
-- Page reloads do **not** interrupt training
-
----
-
-## 🧩 When to Use Each Mode
-
-| Use case | Recommended path |
-|--------|------------------|
-| Best accuracy | Web UI + real voice recordings |
-| Quick testing | Training script only |
-| Family / shared device | Web UI with multiple speakers |
-| Headless / CI | Training script only |
+- browser microphone recording has been removed from this project
+- personal samples are optional, not required
+- the UI server module is now `trainer_server.py`
+- the launcher script name is still `run_recorder_macos.sh` for compatibility
 
 ---
+
+## Credits
+
+Built on top of:
+
+- [microWakeWord](https://github.com/kahrendt/microWakeWord)
+- [piper-sample-generator](https://github.com/rhasspy/piper-sample-generator)
