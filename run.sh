@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_recorder_macos.sh
+# run.sh
 #
 # One-command launcher for the local training UI:
 # - creates/uses .recorder-venv
@@ -12,6 +12,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 VENV_DIR="${REC_VENV_DIR:-$ROOT_DIR/.recorder-venv}"
+PYTHON_BIN="${REC_PYTHON_BIN:-/opt/homebrew/bin/python3.11}"
 PY="$VENV_DIR/bin/python"
 PIP="$PY -m pip"
 PIN_FILE="$VENV_DIR/.pinned_installed"
@@ -28,11 +29,18 @@ PY_MULTIPART_VERSION="${REC_PY_MULTIPART_VERSION:-0.0.9}"
 echo "🎙️ microWakeWord Trainer UI (local)"
 echo "→ ROOT: $ROOT_DIR"
 echo "→ VENV: $VENV_DIR"
+echo "→ PYTHON_BIN: $PYTHON_BIN"
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "❌ Required Python 3.11 interpreter not found at: $PYTHON_BIN"
+  echo "   Install python@3.11 with Homebrew or set REC_PYTHON_BIN to your python3.11 path."
+  exit 1
+fi
 
 # Create venv if missing
 if [[ ! -x "$PY" ]]; then
   echo "🧹 Creating trainer UI venv: $VENV_DIR"
-  python3 -m venv "$VENV_DIR"
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
 # Always activate (handy for PATH vars), but we still use $PY explicitly

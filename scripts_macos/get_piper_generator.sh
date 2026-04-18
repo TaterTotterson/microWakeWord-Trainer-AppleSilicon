@@ -3,8 +3,6 @@
 set -euo pipefail
 
 PIPER_REPO_URL="https://github.com/TaterTotterson/piper-sample-generator.git"
-HF_VOICES_ROOT="https://huggingface.co/rhasspy/piper-voices/resolve/main"
-
 download_file() {
   local url="$1"
   local out="$2"
@@ -56,27 +54,6 @@ if [[ ! -f "${MODELS_DIR}/${EN_MODEL_NAME}.json" ]]; then
   download_file "${EN_MODEL_URL}.json" "${MODELS_DIR}/${EN_MODEL_NAME}.json"
 fi
 
-# Dutch voices (used by --language=nl)
-NL_VOICES=(
-  "nl/nl_NL/pim/medium/nl_NL-pim-medium"
-  "nl/nl_NL/ronnie/medium/nl_NL-ronnie-medium"
-  "nl/nl_BE/nathalie/medium/nl_BE-nathalie-medium"
-)
-echo "🔎 Checking Dutch Piper voices…"
-for voice_path in "${NL_VOICES[@]}"; do
-  voice_name="$(basename "${voice_path}")"
-  onnx_file="${VOICES_DIR}/${voice_name}.onnx"
-  json_file="${VOICES_DIR}/${voice_name}.onnx.json"
-
-  if [[ ! -f "${onnx_file}" ]]; then
-    echo "⬇️ Downloading ${voice_name}.onnx…"
-    download_file "${HF_VOICES_ROOT}/${voice_path}.onnx?download=true" "${onnx_file}"
-  fi
-
-  if [[ ! -f "${json_file}" ]]; then
-    echo "⬇️ Downloading ${voice_name}.onnx.json…"
-    download_file "${HF_VOICES_ROOT}/${voice_path}.onnx.json?download=true" "${json_file}"
-  fi
-done
+echo "ℹ️ Non-English Piper voices are downloaded on demand for the selected language."
 
 echo "✅ piper-sample-generator ready."

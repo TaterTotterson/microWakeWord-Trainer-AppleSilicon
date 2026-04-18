@@ -38,7 +38,7 @@ cd microWakeWord-Trainer-AppleSilicon
 ## Run The Web UI
 
 ```bash
-./run_recorder_macos.sh
+./run.sh
 ```
 
 What this does:
@@ -149,7 +149,7 @@ If a file with the same name already exists, the trainer keeps it by creating ti
 - browser microphone recording has been removed from this project
 - personal samples are optional, not required
 - the UI server module is now `trainer_server.py`
-- the launcher script name is still `run_recorder_macos.sh` for compatibility
+- the launcher script is now `run.sh`
 
 ---
 

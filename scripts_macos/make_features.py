@@ -1,12 +1,18 @@
 # scripts_macos/make_features.py
 
 import os
+import sys
 
 from mmap_ninja.ragged import RaggedMmap
 from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.spectrograms import SpectrogramGeneration
 from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True, write_through=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True, write_through=True)
 
 
 def validate(paths):
@@ -24,6 +30,10 @@ background_paths = [
     "audioset_16k",
 ]
 validate(impulse_paths + background_paths)
+print("⏳ Preparing clip indexes and augmentation pipeline (please wait)…")
+
+tts_wav_count = len(list(Path("./generated_samples").glob("*.wav")))
+print(f"🎤 Generated sample count: {tts_wav_count}")
 
 # Process TTS generated samples (default)
 clips_tts = Clips(
@@ -47,6 +57,8 @@ if os.path.exists("./personal_samples") and any(Path("./personal_samples").glob(
         split_count=0.1,
     )
     print("✅ Found personal samples, will create separate feature set")
+else:
+    print("ℹ️ No personal samples found; continuing with generated samples only")
 
 augmenter = Augmentation(
     augmentation_duration_s=3.2,
@@ -82,6 +94,7 @@ for split, cfg in split_cfg.items():
     out_dir = out_root / split
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"🧪 Processing {split} (TTS) …")
+    print("⏳ Building spectrogram mmap; first progress update can take a moment…")
     spectros = SpectrogramGeneration(
         clips=clips_tts,
         augmenter=augmenter,
@@ -106,6 +119,7 @@ if clips_personal is not None:
         out_dir = out_root_personal / split
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"🧪 Processing {split} (personal) …")
+        print("⏳ Building personal spectrogram mmap; first progress update can take a moment…")
         spectros = SpectrogramGeneration(
             clips=clips_personal,
             augmenter=augmenter,
