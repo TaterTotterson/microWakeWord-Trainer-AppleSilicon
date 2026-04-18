@@ -17,7 +17,7 @@
 # - MW_ISSUE_REPO (default: TaterTotterson/microWakeWords)
 # - MW_MODEL_REPO (default: MW_ISSUE_REPO)
 # - MW_MODEL_BRANCH (default: main)
-# - MW_MODEL_BASE_PATH (default: microWakeWords)
+# - MW_MODEL_BASE_PATH (default: microWakeWordsV3)
 # - MW_POLL_SECONDS (default: 60)
 # - MW_LABEL_PROCESSING (default: mww-processing)
 # - MW_LABEL_DONE (default: mww-added)
@@ -59,7 +59,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MW_ISSUE_REPO="${MW_ISSUE_REPO:-TaterTotterson/microWakeWords}"
 MW_MODEL_REPO="${MW_MODEL_REPO:-$MW_ISSUE_REPO}"
 MW_MODEL_BRANCH="${MW_MODEL_BRANCH:-main}"
-MW_MODEL_BASE_PATH="${MW_MODEL_BASE_PATH:-microWakeWordsV2}"
+MW_MODEL_BASE_PATH="${MW_MODEL_BASE_PATH:-microWakeWordsV3}"
 
 MW_POLL_SECONDS="${MW_POLL_SECONDS:-60}"
 
