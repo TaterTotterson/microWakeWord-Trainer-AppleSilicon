@@ -1,7 +1,12 @@
-<div align="center">
-  <h1>microWakeWord Apple Silicon Trainer UI</h1>
-  <img width="800" alt="microWakeWord trainer screenshot" src="https://github.com/user-attachments/assets/477fb140-fb7f-4ca7-9a03-3db938c5a826" />
-</div>
+<p align="center">
+  <img 
+    src="https://github.com/user-attachments/assets/27661678-cab6-455d-b31c-41383bd0a3e3" 
+    width="300"
+  />
+</p>
+<h3 align="center">
+  <a href="https://taterassistant.com">taterassistant.com</a>
+</h3>
 
 Train custom microWakeWord models on Apple Silicon with a local web UI, generated Piper samples, device-captured samples, reviewed false-wake negatives, live training logs, and ESPHome firmware flashing.
 
