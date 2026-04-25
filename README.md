@@ -51,9 +51,12 @@ Useful overrides:
 
 ```bash
 REC_HOST=127.0.0.1 ./run.sh
+REC_PORT=8790 ./run.sh
 REC_PYTHON_BIN=/path/to/python3.11 ./run.sh
 REC_ESPHOME_VERSION=2026.4.0 ./run.sh
 ```
+
+If you change `REC_PORT`, use that same port in the ESPHome `Trainer App URL`.
 
 ---
 
