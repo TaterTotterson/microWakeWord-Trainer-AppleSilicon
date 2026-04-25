@@ -1,4 +1,19 @@
-personal_samples/*
+# Runtime audio, samples, and generated model artifacts
+personal_samples/
+captured_audio/
+negative_samples/
+generated_samples/
+generated_augmented_features/
+personal_augmented_features/
+reviewed_negative_features/
+trained_wake_words/
+trained_models/
+output/
+recorder_training.log
+
+# Local caches and virtual environments
+.cache/
+.recorder-venv/
 
 # macOS Finder metadata
 .DS_Store

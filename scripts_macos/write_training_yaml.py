@@ -33,6 +33,12 @@ if os.path.exists("personal_augmented_features/training"):
     config["features"].insert(1, {"features_dir": "personal_augmented_features", "sampling_weight": 3.0, "penalty_weight": 1.0, "truth": True, "truncation_strategy": "truncate_start", "type": "mmap"})
     print("✅ Added personal features with higher weight (3.0)")
 
+# Add reviewed false-positive features if they exist
+if os.path.exists("reviewed_negative_features/training"):
+    insert_at = 2 if os.path.exists("personal_augmented_features/training") else 1
+    config["features"].insert(insert_at, {"features_dir": "reviewed_negative_features", "sampling_weight": 8.0, "penalty_weight": 1.25, "truth": False, "truncation_strategy": "random", "type": "mmap"})
+    print("✅ Added reviewed negative features with stronger negative weighting")
+
 with open("training_parameters.yaml", "w") as f:
     yaml.dump(config, f)
 print("📝 Wrote training_parameters.yaml")

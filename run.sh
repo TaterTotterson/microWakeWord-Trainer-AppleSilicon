@@ -18,18 +18,28 @@ PIP="$PY -m pip"
 PIN_FILE="$VENV_DIR/.pinned_installed"
 
 # Optional host/port
-HOST="${REC_HOST:-127.0.0.1}"
+HOST="${REC_HOST:-0.0.0.0}"
 PORT="${REC_PORT:-8789}"
 
 # Pinned deps (edit if you want)
 FASTAPI_VERSION="${REC_FASTAPI_VERSION:-0.115.6}"
 UVICORN_VERSION="${REC_UVICORN_VERSION:-0.30.6}"
 PY_MULTIPART_VERSION="${REC_PY_MULTIPART_VERSION:-0.0.9}"
+ESPHOME_VERSION="${REC_ESPHOME_VERSION:-2026.4.0}"
 
 echo "🎙️ microWakeWord Trainer UI (local)"
 echo "→ ROOT: $ROOT_DIR"
 echo "→ VENV: $VENV_DIR"
 echo "→ PYTHON_BIN: $PYTHON_BIN"
+
+install_ui_deps() {
+  # Core server + firmware flasher deps
+  $PIP install \
+    "fastapi==${FASTAPI_VERSION}" \
+    "uvicorn[standard]==${UVICORN_VERSION}" \
+    "python-multipart==${PY_MULTIPART_VERSION}" \
+    "esphome==${ESPHOME_VERSION}"
+}
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "❌ Required Python 3.11 interpreter not found at: $PYTHON_BIN"
@@ -52,15 +62,24 @@ if [[ ! -f "$PIN_FILE" ]]; then
   echo "🧹 Fresh trainer UI venv → installing pinned dependencies"
   $PIP install -U pip setuptools wheel
 
-  # Core server deps
-  $PIP install \
-    "fastapi==${FASTAPI_VERSION}" \
-    "uvicorn[standard]==${UVICORN_VERSION}" \
-    "python-multipart==${PY_MULTIPART_VERSION}"
+  install_ui_deps
 
   touch "$PIN_FILE"
 else
   echo "✅ Reusing existing .recorder-venv (no upgrades)"
+  if ! "$PY" - "$ESPHOME_VERSION" <<'PY' >/dev/null 2>&1
+import importlib.metadata
+import sys
+import zeroconf
+
+expected = sys.argv[1]
+installed = importlib.metadata.version("esphome")
+raise SystemExit(0 if installed == expected else 1)
+PY
+  then
+    echo "📦 Firmware tab dependencies missing or stale → installing ESPHome firmware dependencies"
+    install_ui_deps
+  fi
 fi
 
 # HARD FAIL: ensure pip is the venv pip

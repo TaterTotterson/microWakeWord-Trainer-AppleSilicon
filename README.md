@@ -1,28 +1,21 @@
 <div align="center">
   <h1>microWakeWord Apple Silicon Trainer UI</h1>
-  <img width="800" alt="Screenshot 2026-04-14 at 11 02 06 PM" src="https://github.com/user-attachments/assets/477fb140-fb7f-4ca7-9a03-3db938c5a826" />
+  <img width="800" alt="microWakeWord trainer screenshot" src="https://github.com/user-attachments/assets/477fb140-fb7f-4ca7-9a03-3db938c5a826" />
 </div>
 
-Train custom microWakeWord models on Apple Silicon with:
+Train custom microWakeWord models on Apple Silicon with a local web UI, generated Piper samples, device-captured samples, reviewed false-wake negatives, live training logs, and ESPHome firmware flashing.
 
-- uploaded personal voice samples
-- automatically generated Piper TTS samples
-- a local web UI with live training logs
-
-The project no longer records audio in the browser. Instead, you upload your own audio files, the app validates or converts them into the required training format, and training runs from the same UI.
+Real samples come from device-captured wake audio, close misses, or manual uploads. Every saved sample is normalized to `16 kHz / mono / 16-bit PCM WAV` before training.
 
 ---
 
 ## What The UI Does
 
-- Start a session for a wake word
-- Test TTS pronunciation
-- Upload one or many personal voice samples
-- Automatically normalize uploads to `16 kHz / mono / 16-bit PCM WAV`
-- Train with or without personal samples
-- Show training output in a popup console window
-
-Personal samples are optional. If you upload none, the trainer can still run with TTS-only data after confirmation.
+- `Trainer` starts a wake-word session, shows positive/negative sample counts, and launches training.
+- `Captured Audio` reviews clips sent by ESPHome sats, including wake hits, close misses, and false wakes.
+- `Samples` plays, removes, clears, and manually imports personal or negative samples.
+- `Firmware` builds the latest `microWakeWords` ESPHome YAMLs from GitHub and flashes VoicePE or Satellite1 over OTA.
+- Popup consoles show colorized training and firmware logs while long-running jobs are active.
 
 ---
 
@@ -41,23 +34,80 @@ cd microWakeWord-Trainer-AppleSilicon
 ./run.sh
 ```
 
-What this does:
+The launcher:
 
+- requires Python `3.11` by default at `/opt/homebrew/bin/python3.11`
 - creates or reuses `.recorder-venv`
-- installs the UI server dependencies once
-- launches the FastAPI app locally
+- installs the UI, ESPHome, and firmware flasher dependencies
+- serves the app on `0.0.0.0:8789` so ESPHome devices can send captured audio
 
-Then open:
+Open:
 
 ```text
 http://127.0.0.1:8789
 ```
 
+Useful overrides:
+
+```bash
+REC_HOST=127.0.0.1 ./run.sh
+REC_PYTHON_BIN=/path/to/python3.11 ./run.sh
+REC_ESPHOME_VERSION=2026.4.0 ./run.sh
+```
+
 ---
 
-## Personal Samples
+## Captured Audio Workflow
 
-The UI accepts common audio formats such as:
+To collect samples from a sat, flash it with the Tater firmware from [TaterTotterson/microWakeWords](https://github.com/TaterTotterson/microWakeWords). The `Firmware` tab can build and flash the VoicePE or Satellite1 YAMLs directly from that repo.
+
+After flashing, the device exposes ESPHome entities for capture setup:
+
+- `Capture Wake Audio` toggles upload of wake-word triggers.
+- `Capture Close Misses` toggles upload of near misses.
+- `Trainer App URL` sets the trainer address, for example `http://<trainer-ip>:8789`.
+
+ESPHome devices can send raw captured audio to:
+
+```text
+/api/upload_captured_audio_raw
+```
+
+Keep the training app running and reachable at the `Trainer App URL` while capture is enabled. The sats upload clips live; if the app is stopped or the URL is wrong, captured audio will not be saved.
+
+In the `Captured Audio` tab:
+
+- play each clip from the inbox
+- mark good wake-word clips as `This is good`
+- mark bad triggers as `False wake`
+- discard clips that should not be used
+
+Approved clips move into:
+
+```text
+personal_samples/
+```
+
+False wakes move into:
+
+```text
+negative_samples/
+```
+
+Captured audio is boosted for easier playback in the UI, then kept in the correct training format.
+
+---
+
+## Samples
+
+The `Samples` tab is the sample library.
+
+- `Personal` samples are positive examples of the wake word.
+- `Negative` samples are reviewed false wakes or hard negatives.
+- Both can be played back and removed one at a time.
+- Manual upload is available here as an optional seed path.
+
+Accepted manual upload formats include:
 
 - WAV
 - MP3
@@ -68,23 +118,28 @@ The UI accepts common audio formats such as:
 - OPUS
 - WEBM
 
-Uploads are checked and, if needed, converted with `ffmpeg` into:
+Uploads are validated or converted with `ffmpeg` into:
 
 ```text
 16 kHz / mono / 16-bit PCM WAV
 ```
 
-Converted files are stored in:
+Starting a new session does not clear samples. Use the clear buttons in `Samples` if you want to remove saved personal or negative clips.
 
-```text
-personal_samples/
-```
+---
 
-Notes:
+## Training Flow
 
-- samples are not auto-cleared when you start a new session
-- use the `Clear personal samples` button if you want to remove them
-- training can run with zero personal samples
+1. Enter the wake phrase in `Trainer`.
+2. Choose the language.
+3. Optionally test pronunciation with `Test TTS`.
+4. Review the positive and negative sample counts.
+5. Click `Start training`.
+6. Watch the popup training console.
+
+Personal samples are optional. Training can run with zero personal samples after confirmation, using generated TTS samples and the stock negative datasets.
+
+Reviewed negative samples are included as a separate hard-negative feature set when present, so false wakes from your real devices can make the next model more selective.
 
 ---
 
@@ -92,64 +147,80 @@ Notes:
 
 The language picker is dynamic.
 
-- `en` is always available
-- non-English languages are populated from Piper voice metadata
-- when you start training with a non-English language, the trainer downloads all Piper ONNX voices for that selected language only
-- it does not download every language up front
-- already-downloaded voices are reused
+- `en` is always available.
+- English keeps the existing dedicated generator model path.
+- Non-English languages are discovered from the Piper voices catalog and any local Piper voice metadata.
+- When a non-English language is selected, the trainer downloads all voices for that selected language only.
+- Already-downloaded voices are reused.
+- It does not download every language up front.
 
-English stays on its existing dedicated generator model path. Non-English languages use Piper ONNX voices for the selected language family.
-
-If the upstream Piper catalog is unavailable, already-installed local voices can still be used.
-
----
-
-## Training Flow
-
-1. Enter the wake word
-2. Optionally test pronunciation with `Test TTS`
-3. Optionally upload personal samples
-4. Click `Start training`
-5. Watch the popup console for:
-   - selected-language voice downloads when needed
-   - sample generation progress
-   - training progress and final status
-
-The console can be reopened with `Open console`.
+If the upstream Piper catalog is unavailable, already-installed local voices are used when available.
 
 ---
 
-## Training Script Only
+## Dataset Behavior
 
-You can still run the Apple Silicon training pipeline directly:
+The first training run downloads and prepares the training datasets when they are missing. After the datasets are prepared, later runs reuse the local copies.
 
-```bash
-./train_microwakeword_macos.sh "hey_tater"
-```
+Piper voices, generated samples, and feature caches are also reused when the selected language, wake word, and sample inputs have not changed.
 
-If `personal_samples/*.wav` exists, those files are included automatically.
+---
+
+## Firmware Flashing
+
+The `Firmware` tab builds and flashes Tater firmware for supported ESPHome sats.
+
+- Downloads the latest firmware YAML templates from `TaterTotterson/microWakeWords` on GitHub.
+- Lets you choose `VoicePE` or `Satellite1`.
+- Auto-detects ESPHome devices with mDNS when available.
+- Allows manual IP or hostname entry if discovery does not find the device.
+- Saves firmware form values so you do not re-enter sounds and URLs every run.
+- Lists locally trained wake words from `trained_wake_words/` for easy model selection.
+- Builds with ESPHome and flashes OTA.
+- Streams ESPHome output in a colorized firmware console.
+
+Firmware YAMLs are intentionally pulled from GitHub each time. There is no local fallback path in the trainer UI.
 
 ---
 
 ## Output Files
 
-Successful runs produce normalized output files such as:
+Successful runs produce firmware-ready artifacts in:
 
 ```text
-output/<wake_word>.tflite
-output/<wake_word>.json
+trained_wake_words/<wake_word>.tflite
+trained_wake_words/<wake_word>.json
 ```
 
-If a file with the same name already exists, the trainer keeps it by creating timestamped backup files first.
+The firmware tab uses this folder to populate the wake-word dropdown.
+
+Intermediate training files are created under:
+
+```text
+trained_models/
+```
 
 ---
 
-## Notes
+## Direct Training Script
 
-- browser microphone recording has been removed from this project
-- personal samples are optional, not required
-- the UI server module is now `trainer_server.py`
-- the launcher script is now `run.sh`
+Run the Apple Silicon training pipeline directly:
+
+```bash
+./train_microwakeword_macos.sh "hey_tater"
+```
+
+If `personal_samples/*.wav` or `negative_samples/*.wav` exists, those samples are included automatically.
+
+---
+
+## Important Notes
+
+- Personal samples are optional.
+- Negative samples are optional but useful for reducing false wakes.
+- The UI server is `trainer_server.py`.
+- The launcher is `run.sh`.
+- Firmware capture settings live on the ESPHome device and can be toggled from the device entities after flashing.
 
 ---
 

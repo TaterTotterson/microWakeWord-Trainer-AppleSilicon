@@ -60,6 +60,21 @@ if os.path.exists("./personal_samples") and any(Path("./personal_samples").glob(
 else:
     print("ℹ️ No personal samples found; continuing with generated samples only")
 
+# Process reviewed false-positive samples if available (optional)
+clips_reviewed_negative = None
+if os.path.exists("./negative_samples") and any(Path("./negative_samples").glob("*.wav")):
+    clips_reviewed_negative = Clips(
+        input_directory="./negative_samples",
+        file_pattern="*.wav",
+        max_clip_duration_s=5,
+        remove_silence=False,
+        random_split_seed=10,
+        split_count=0.1,
+    )
+    print("✅ Found reviewed negative samples, will create a separate negative feature set")
+else:
+    print("ℹ️ No reviewed negative samples found; continuing with stock negative datasets only")
+
 augmenter = Augmentation(
     augmentation_duration_s=3.2,
     augmentation_probabilities={
@@ -122,6 +137,28 @@ if clips_personal is not None:
         print("⏳ Building personal spectrogram mmap; first progress update can take a moment…")
         spectros = SpectrogramGeneration(
             clips=clips_personal,
+            augmenter=augmenter,
+            slide_frames=cfg["slide_frames"],
+            step_ms=10,
+        )
+        RaggedMmap.from_generator(
+            out_dir=str(out_dir / "wakeword_mmap"),
+            sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
+            batch_size=100,
+            verbose=True,
+        )
+
+# Process reviewed negative samples if available
+if clips_reviewed_negative is not None:
+    out_root_negative = Path("reviewed_negative_features")
+    out_root_negative.mkdir(exist_ok=True)
+    for split, cfg in split_cfg.items():
+        out_dir = out_root_negative / split
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"🧪 Processing {split} (reviewed negatives) …")
+        print("⏳ Building reviewed negative spectrogram mmap; first progress update can take a moment…")
+        spectros = SpectrogramGeneration(
+            clips=clips_reviewed_negative,
             augmenter=augmenter,
             slide_frames=cfg["slide_frames"],
             step_ms=10,

@@ -60,6 +60,7 @@ MW_ISSUE_REPO="${MW_ISSUE_REPO:-TaterTotterson/microWakeWords}"
 MW_MODEL_REPO="${MW_MODEL_REPO:-$MW_ISSUE_REPO}"
 MW_MODEL_BRANCH="${MW_MODEL_BRANCH:-main}"
 MW_MODEL_BASE_PATH="${MW_MODEL_BASE_PATH:-microWakeWordsV3}"
+MW_LOCAL_ARTIFACT_DIR="${MW_LOCAL_ARTIFACT_DIR:-trained_wake_words}"
 
 MW_POLL_SECONDS="${MW_POLL_SECONDS:-60}"
 
@@ -419,9 +420,9 @@ while true; do
       continue
     fi
 
-    # Expect artifacts in repo root
-    tflite_file="$ROOT_DIR/${safe_word}.tflite"
-    json_file="$ROOT_DIR/${safe_word}.json"
+    # Expect artifacts in the local trained wake-word catalog
+    tflite_file="$ROOT_DIR/${MW_LOCAL_ARTIFACT_DIR}/${safe_word}.tflite"
+    json_file="$ROOT_DIR/${MW_LOCAL_ARTIFACT_DIR}/${safe_word}.json"
 
     if [[ ! -f "$tflite_file" || ! -f "$json_file" ]]; then
       log "❌ Artifacts not found after training: ${tflite_file} / ${json_file}"

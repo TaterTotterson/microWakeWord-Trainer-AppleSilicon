@@ -319,12 +319,24 @@ compute_personal_cache_key() {
   } | shasum -a 256 | awk '{print $1}'
 }
 
+compute_reviewed_negative_cache_key() {
+  if ! dir_has_matching_files "negative_samples" "*.wav"; then
+    echo "none"
+    return
+  fi
+  {
+    find "negative_samples" -type f -name '*.wav' -exec stat -f 'negative=%N:%m:%z' {} \; | sort
+  } | shasum -a 256 | awk '{print $1}'
+}
+
 compute_feature_cache_key() {
   local sample_key="$1"
   local personal_key="$2"
+  local reviewed_negative_key="$3"
   {
     printf 'sample_key=%s\n' "$sample_key"
     printf 'personal_key=%s\n' "$personal_key"
+    printf 'reviewed_negative_key=%s\n' "$reviewed_negative_key"
     stat -f 'feature_script=%N:%m:%z' "scripts_macos/make_features.py"
     for dataset_dir in mit_rirs audioset_16k fma_16k wham_16k chime_16k; do
       printf '%s=%s\n' "$dataset_dir" "$(count_matching_files "$dataset_dir" '*.wav')"
@@ -336,6 +348,7 @@ SAMPLE_CACHE_KEY_FILE="generated_samples/.cache_key"
 SAMPLE_CACHE_STAMP_FILE="generated_samples/.cache_stamp"
 FEATURE_CACHE_KEY_FILE="generated_augmented_features/.cache_key"
 PERSONAL_FEATURE_CACHE_KEY_FILE="personal_augmented_features/.cache_key"
+REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE="reviewed_negative_features/.cache_key"
 SAMPLE_CACHE_KEY="$(compute_sample_cache_key)"
 
 # ── (A) clean previous run artifacts that must always be rebuilt ─────────────
@@ -416,36 +429,57 @@ fi
 
 # ── (E) build augmenter + spectrogram feature mmaps ───────────────────────────
 PERSONAL_CACHE_KEY="$(compute_personal_cache_key)"
+REVIEWED_NEGATIVE_CACHE_KEY="$(compute_reviewed_negative_cache_key)"
 SAMPLE_CACHE_STAMP="$(read_cache_key "$SAMPLE_CACHE_STAMP_FILE")"
-FEATURE_CACHE_KEY="$(compute_feature_cache_key "${SAMPLE_CACHE_KEY}:${SAMPLE_CACHE_STAMP}" "$PERSONAL_CACHE_KEY")"
+FEATURE_CACHE_KEY="$(compute_feature_cache_key "${SAMPLE_CACHE_KEY}:${SAMPLE_CACHE_STAMP}" "$PERSONAL_CACHE_KEY" "$REVIEWED_NEGATIVE_CACHE_KEY")"
 feature_cache_hit=false
 cached_feature_key="$(read_cache_key "$FEATURE_CACHE_KEY_FILE")"
 cached_personal_feature_key="$(read_cache_key "$PERSONAL_FEATURE_CACHE_KEY_FILE")"
+cached_reviewed_negative_feature_key="$(read_cache_key "$REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE")"
 
 if features_dir_ready "generated_augmented_features" && [[ -n "$cached_feature_key" && "$cached_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
+  personal_feature_cache_ok=false
   if [[ "$PERSONAL_CACHE_KEY" == "none" ]]; then
-    feature_cache_hit=true
+    personal_feature_cache_ok=true
     if [[ -d "personal_augmented_features" ]]; then
       echo "♻️ Removing stale personal feature cache (no personal samples present)."
       rm -rf personal_augmented_features
     fi
   elif features_dir_ready "personal_augmented_features" && [[ -n "$cached_personal_feature_key" && "$cached_personal_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
+    personal_feature_cache_ok=true
+  fi
+
+  reviewed_negative_feature_cache_ok=false
+  if [[ "$REVIEWED_NEGATIVE_CACHE_KEY" == "none" ]]; then
+    reviewed_negative_feature_cache_ok=true
+    if [[ -d "reviewed_negative_features" ]]; then
+      echo "♻️ Removing stale reviewed negative feature cache (no reviewed negative samples present)."
+      rm -rf reviewed_negative_features
+    fi
+  elif features_dir_ready "reviewed_negative_features" && [[ -n "$cached_reviewed_negative_feature_key" && "$cached_reviewed_negative_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
+    reviewed_negative_feature_cache_ok=true
+  fi
+
+  if [[ "$personal_feature_cache_ok" == "true" && "$reviewed_negative_feature_cache_ok" == "true" ]]; then
     feature_cache_hit=true
   fi
 fi
 
 if [[ "$feature_cache_hit" == "true" ]]; then
-  echo "✅ Reusing augmented feature caches for the current wake word and personal samples."
+  echo "✅ Reusing augmented feature caches for the current wake word, personal samples, and reviewed negatives."
 else
-  if [[ -d "generated_augmented_features" || -d "personal_augmented_features" ]]; then
+  if [[ -d "generated_augmented_features" || -d "personal_augmented_features" || -d "reviewed_negative_features" ]]; then
     echo "♻️ Feature cache changed; rebuilding augmented features."
-    rm -rf generated_augmented_features personal_augmented_features
+    rm -rf generated_augmented_features personal_augmented_features reviewed_negative_features
   fi
   echo "🧪 Building augmented feature sets…"
   "$PY" scripts_macos/make_features.py
   write_cache_key "$FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
   if [[ "$PERSONAL_CACHE_KEY" != "none" && -d "personal_augmented_features" ]]; then
     write_cache_key "$PERSONAL_FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
+  fi
+  if [[ "$REVIEWED_NEGATIVE_CACHE_KEY" != "none" && -d "reviewed_negative_features" ]]; then
+    write_cache_key "$REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
   fi
 fi
 
@@ -507,7 +541,9 @@ if not safe:
     safe = "wakeword"
 
 src = Path("trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite")
-dst = Path(f"{safe}.tflite")
+catalog_dir = Path(os.environ.get("TRAINED_WAKE_WORDS_DIR", "trained_wake_words"))
+catalog_dir.mkdir(parents=True, exist_ok=True)
+dst = catalog_dir / f"{safe}.tflite"
 if not src.exists():
     raise SystemExit(f"❌ Model not found at {src}")
 shutil.copy(src, dst)
@@ -542,10 +578,10 @@ meta = {
     "minimum_esphome_version": "2024.7.0"
   }
 }
-json_path = Path(f"{safe}.json")
+json_path = catalog_dir / f"{safe}.json"
 json_path.write_text(json.dumps(meta, indent=2))
 
-print(f"📦 Wrote {dst.name} and {json_path.name} (wake word: {target!r})")
+print(f"📦 Wrote {dst} and {json_path} (wake word: {target!r})")
 PY
 
 echo "🎉 Done."
