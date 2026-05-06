@@ -56,11 +56,10 @@ PIPER_CATALOG_CACHE_FILE = Path(
 ).resolve()
 DEFAULT_LANGUAGE = os.environ.get("MWW_LANGUAGE", "en")
 MANUAL_LANGUAGE_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    # Piper's upstream voice catalog currently does not list Korean. Keep it
-    # selectable and route missing Piper voices through the repo Qwen fallback.
+    # Korean training uses Qwen TTS through the wakeword repo rather than Piper.
     "ko": {
         "code": "ko",
-        "label": "Korean (ko, Qwen fallback)",
+        "label": "Korean (ko, Qwen TTS)",
         "name": "Korean",
         "voice_count": 0,
         "regions": ["South Korea"],
@@ -515,6 +514,15 @@ def _download_to_path(url: str, dest_path: Path):
 
 
 def _ensure_non_english_language_voices(language_family: str, log) -> Dict[str, int]:
+    if language_family == "ko":
+        log("===== Korean TTS =====")
+        log("→ Korean training uses the wakeword repo Qwen TTS generator.")
+        return {
+            "downloaded_files": 0,
+            "existing_files": 0,
+            "voices": 0,
+        }
+
     downloads = _catalog_voice_files(language_family)
     local_voices = sorted(PIPER_VOICES_DIR.glob(f"{language_family}_*.onnx")) if PIPER_VOICES_DIR.exists() else []
     if not downloads:
@@ -525,14 +533,6 @@ def _ensure_non_english_language_voices(language_family: str, log) -> Dict[str, 
                 "downloaded_files": 0,
                 "existing_files": len(local_voices),
                 "voices": len(local_voices),
-            }
-        if language_family == "ko":
-            log("===== Korean TTS =====")
-            log("→ No Piper Korean voice found; using the wakeword repo Qwen TTS fallback.")
-            return {
-                "downloaded_files": 0,
-                "existing_files": 0,
-                "voices": 0,
             }
         raise RuntimeError(
             f"No Piper ONNX voices found for language '{language_family}' in the upstream catalog."

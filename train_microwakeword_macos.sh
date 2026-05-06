@@ -41,6 +41,15 @@ TTS_BACKEND="piper"
 QWEN_PROJECT_ROOT="${MWW_QWEN_PROJECT_ROOT:-$(cd "$SCRIPT_ROOT/../.." && pwd)}"
 QWEN_PYTHON="${MWW_QWEN_PYTHON:-$QWEN_PROJECT_ROOT/.venv/bin/python}"
 QWEN_TTS_MODEL_ID="${MWW_QWEN_MODEL_ID:-Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
+if [[ "$LANGUAGE" == "ko" ]]; then
+  USE_QWEN_TTS=true
+  TTS_BACKEND="qwen"
+  MAX_TTS_SAMPLES="${MWW_QWEN_MAX_TTS_SAMPLES:-1000}"
+  if [[ ${#PIPER_MODELS[@]} -gt 0 ]]; then
+    echo "ℹ️  Korean training uses Qwen TTS; ignoring --piper-model for language 'ko'."
+    PIPER_MODELS=()
+  fi
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
@@ -268,9 +277,15 @@ PY
 # ── export for inline python ──────────────────────────────────────────────────
 export TARGET_WORD MAX_TTS_SAMPLES BATCH_SIZE LANGUAGE MWW_LANGUAGE
 
-# ── Ensure at least one model is provided (language-aware default) ────────────
+# ── Ensure at least one TTS source is provided (language-aware default) ───────
 DEFAULT_MODEL_PT="piper-sample-generator/models/en_US-libritts_r-medium.pt"
-if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
+if [[ "$USE_QWEN_TTS" == "true" ]]; then
+  echo "ℹ️  Korean training uses Qwen TTS from the wakeword repo."
+  echo "    QWEN_PROJECT_ROOT=$QWEN_PROJECT_ROOT"
+  echo "    QWEN_PYTHON=$QWEN_PYTHON"
+  echo "    QWEN_TTS_MODEL_ID=$QWEN_TTS_MODEL_ID"
+  echo "    Korean generated sample count: $MAX_TTS_SAMPLES (override with MWW_QWEN_MAX_TTS_SAMPLES)"
+elif [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
   if [[ "$LANGUAGE" == "en" ]]; then
     echo "ℹ️  No --piper-model provided; using default English voice:"
     echo "    $DEFAULT_MODEL_PT"
@@ -285,29 +300,16 @@ if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
     language_voice_models=(piper-sample-generator/voices/"${LANGUAGE}"_*.onnx)
     shopt -u nullglob
     if [[ ${#language_voice_models[@]} -eq 0 ]]; then
-      if [[ "$LANGUAGE" == "ko" ]]; then
-        USE_QWEN_TTS=true
-        TTS_BACKEND="qwen"
-        MAX_TTS_SAMPLES="${MWW_QWEN_MAX_TTS_SAMPLES:-1000}"
-        echo "ℹ️  No Piper Korean voice found; using Qwen TTS from the wakeword repo."
-        echo "    QWEN_PROJECT_ROOT=$QWEN_PROJECT_ROOT"
-        echo "    QWEN_PYTHON=$QWEN_PYTHON"
-        echo "    QWEN_TTS_MODEL_ID=$QWEN_TTS_MODEL_ID"
-        echo "    Korean generated sample count: $MAX_TTS_SAMPLES (override with MWW_QWEN_MAX_TTS_SAMPLES)"
-      else
-        echo "❌ No Piper ONNX voice models found for language '${LANGUAGE}'."
-        echo "   Expected files matching: piper-sample-generator/voices/${LANGUAGE}_*.onnx"
-        echo "   Add voice files or choose English (en)."
-        exit 1
-      fi
+      echo "❌ No Piper ONNX voice models found for language '${LANGUAGE}'."
+      echo "   Expected files matching: piper-sample-generator/voices/${LANGUAGE}_*.onnx"
+      echo "   Add voice files or choose English (en)."
+      exit 1
     fi
-    if [[ "$USE_QWEN_TTS" != "true" ]]; then
-      echo "ℹ️  No --piper-model provided; using ${#language_voice_models[@]} voice model(s) for language '${LANGUAGE}':"
-      for vf in "${language_voice_models[@]}"; do
-        echo "    $vf"
-      done
-      PIPER_MODELS=("${language_voice_models[@]}")
-    fi
+    echo "ℹ️  No --piper-model provided; using ${#language_voice_models[@]} voice model(s) for language '${LANGUAGE}':"
+    for vf in "${language_voice_models[@]}"; do
+      echo "    $vf"
+    done
+    PIPER_MODELS=("${language_voice_models[@]}")
   fi
 fi
 
@@ -422,12 +424,12 @@ compute_sample_cache_key() {
 
 validate_qwen_tts() {
   if [[ ! -f "$QWEN_PROJECT_ROOT/src/mcu_wakeword/cli.py" ]]; then
-    echo "❌ Korean fallback cannot find the wakeword repo at: $QWEN_PROJECT_ROOT"
+    echo "❌ Korean Qwen TTS cannot find the wakeword repo at: $QWEN_PROJECT_ROOT"
     echo "   Set MWW_QWEN_PROJECT_ROOT to /path/to/wakeword."
     exit 1
   fi
   if [[ ! -x "$QWEN_PYTHON" ]]; then
-    echo "❌ Korean fallback cannot find executable Python at: $QWEN_PYTHON"
+    echo "❌ Korean Qwen TTS cannot find executable Python at: $QWEN_PYTHON"
     echo "   Run scripts/install.sh --dev from the wakeword repo, or set MWW_QWEN_PYTHON."
     exit 1
   fi
