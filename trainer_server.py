@@ -81,12 +81,17 @@ FIRMWARE_MAX_LOG_LINES = int(os.environ.get("FIRMWARE_MAX_LOG_LINES", "500"))
 FIRMWARE_GITHUB_OWNER = os.environ.get("FIRMWARE_GITHUB_OWNER", "TaterTotterson")
 FIRMWARE_GITHUB_REPO = os.environ.get("FIRMWARE_GITHUB_REPO", "microWakeWords")
 FIRMWARE_GITHUB_REF = os.environ.get("FIRMWARE_GITHUB_REF", "main")
+WAKE_SOUND_CATALOG_CACHE_TTL_SECONDS = int(os.environ.get("WAKE_SOUND_CATALOG_CACHE_TTL_SECONDS", "600"))
 FIRMWARE_PLATFORMIO_DIR = FIRMWARE_CACHE_DIR / "platformio"
 FIRMWARE_HOME_DIR = FIRMWARE_CACHE_DIR / "home"
 FIRMWARE_XDG_CACHE_DIR = FIRMWARE_CACHE_DIR / "cache"
+FIRMWARE_ESPHOME_DATA_DIR = FIRMWARE_CACHE_DIR / "esphome_data"
 FIRMWARE_PROFILE_FILE = Path(
     os.environ.get("FIRMWARE_PROFILE_FILE", str(FIRMWARE_CACHE_DIR / "profiles.json"))
 ).resolve()
+WAKE_SOUND_MANIFEST_PATHS = ("wake_sound_manifest.json", "wake-sound-manifest.json")
+WAKE_SOUND_CATALOG_CACHE: Dict[str, Any] = {"ts": 0.0, "payload": {}}
+WAKE_SOUND_CATALOG_LOCK = threading.Lock()
 FIRMWARE_TEMPLATE_SPECS = (
     {
         "key": "voicepe",
@@ -1208,6 +1213,93 @@ def _load_firmware_template_text(spec: Dict[str, Any]) -> tuple[str, str]:
         raise RuntimeError(f"Could not download firmware template from {url}: {exc}") from exc
 
 
+def _wake_sound_label_from_slug(slug: str) -> str:
+    text = str(slug or "").strip()
+    if not text:
+        return "Wake Sound"
+    return re.sub(r"[_\-.]+", " ", text).strip().title() or "Wake Sound"
+
+
+def _wake_sound_entries_from_manifest(payload: Any) -> List[Dict[str, str]]:
+    rows: List[Any] = []
+    if isinstance(payload, list):
+        rows = list(payload)
+    elif isinstance(payload, dict):
+        for key in ("entries", "wake_sounds", "sounds", "audio", "items"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                rows = list(candidate)
+                break
+
+    entries: List[Dict[str, str]] = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = str(
+            row.get("url")
+            or row.get("download_url")
+            or row.get("audio_url")
+            or row.get("sound_url")
+            or row.get("wake_sound_url")
+            or row.get("wake_word_triggered_sound_file")
+            or ""
+        ).strip()
+        path = str(row.get("path") or "").strip()
+        if not url and path:
+            url = _firmware_raw_url(path)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        slug = str(row.get("slug") or row.get("name") or row.get("key") or Path(path or url).stem).strip()
+        entries.append(
+            {
+                "value": url,
+                "label": str(row.get("label") or row.get("title") or _wake_sound_label_from_slug(slug)).strip(),
+            }
+        )
+    return sorted(entries, key=lambda item: (item["label"].lower(), item["value"]))
+
+
+def _load_wake_sound_catalog() -> Dict[str, Any]:
+    now = time.time()
+    with WAKE_SOUND_CATALOG_LOCK:
+        cached_ts = float(WAKE_SOUND_CATALOG_CACHE.get("ts") or 0.0)
+        cached_payload = WAKE_SOUND_CATALOG_CACHE.get("payload")
+        if isinstance(cached_payload, dict) and (now - cached_ts) < WAKE_SOUND_CATALOG_CACHE_TTL_SECONDS:
+            return copy.deepcopy(cached_payload)
+
+    warnings: List[str] = []
+    for manifest_path in WAKE_SOUND_MANIFEST_PATHS:
+        manifest_url = _firmware_raw_url(manifest_path)
+        try:
+            payload = json.loads(_fetch_text_url(manifest_url, timeout=20))
+            entries = _wake_sound_entries_from_manifest(payload)
+            if entries:
+                catalog = {"entries": entries, "warning": "", "source_label": manifest_url}
+                with WAKE_SOUND_CATALOG_LOCK:
+                    WAKE_SOUND_CATALOG_CACHE["ts"] = now
+                    WAKE_SOUND_CATALOG_CACHE["payload"] = copy.deepcopy(catalog)
+                return catalog
+        except Exception as exc:
+            warnings.append(f"{manifest_path}: {exc}")
+
+    catalog = {
+        "entries": [],
+        "warning": warnings[0] if warnings else "Wake sound catalog unavailable.",
+        "source_label": "",
+    }
+    with WAKE_SOUND_CATALOG_LOCK:
+        WAKE_SOUND_CATALOG_CACHE["ts"] = now
+        WAKE_SOUND_CATALOG_CACHE["payload"] = copy.deepcopy(catalog)
+    return catalog
+
+
+def _wake_sound_picker_options(catalog: Dict[str, Any]) -> List[Dict[str, str]]:
+    entries = catalog.get("entries") if isinstance(catalog.get("entries"), list) else []
+    return [{"value": "__custom__", "label": "Custom URL"}, *[dict(row) for row in entries if isinstance(row, dict)]]
+
+
 def _extract_substitution_sections(raw_text: str) -> Dict[str, str]:
     section_map: Dict[str, str] = {}
     in_substitutions = False
@@ -1247,19 +1339,115 @@ def _load_firmware_profiles() -> Dict[str, Dict[str, str]]:
     return {}
 
 
-def _save_firmware_profile(template_key: str, values: Dict[str, str]) -> None:
+def _save_firmware_profile(profile_key: str, values: Dict[str, str]) -> None:
     FIRMWARE_PROFILE_FILE.parent.mkdir(parents=True, exist_ok=True)
     profiles = _load_firmware_profiles()
-    profiles[template_key] = {str(key): str(value) for key, value in values.items() if str(key)}
+    profiles[profile_key] = {str(key): str(value) for key, value in values.items() if str(key)}
     FIRMWARE_PROFILE_FILE.write_text(json.dumps(profiles, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def _normalize_firmware_profile_update(template_key: str, values: Dict[str, Any]) -> Dict[str, str]:
-    ctx = _load_firmware_template_context(template_key)
+def _firmware_profile_target(raw_host: Any = "", raw_port: Any = "") -> tuple[str, str]:
+    host = str(raw_host or "").strip()
+    port = str(raw_port or "").strip()
+    if "://" in host:
+        parsed = urlparse(host)
+        host = parsed.hostname or ""
+        if not port and parsed.port:
+            port = str(parsed.port)
+    host = host.strip().strip("/")
+    if host.count(":") == 1 and not port:
+        maybe_host, maybe_port = host.rsplit(":", 1)
+        if maybe_port.isdigit():
+            host = maybe_host
+            port = maybe_port
+    host = host.strip("[]").strip().lower()
+    if not host:
+        return "", ""
+    with contextlib.suppress(Exception):
+        parsed_port = int(port or FIRMWARE_DEFAULT_OTA_PORT)
+        if parsed_port == 6053:
+            parsed_port = FIRMWARE_DEFAULT_OTA_PORT
+        port = str(parsed_port)
+    if not port:
+        port = str(FIRMWARE_DEFAULT_OTA_PORT)
+    return host, port
+
+
+def _firmware_profile_key_for_target(raw_host: Any = "", raw_port: Any = "") -> str:
+    host, port = _firmware_profile_target(raw_host, raw_port)
+    return f"device:{host}:{port}" if host else ""
+
+
+def _firmware_profile_key(template_key: Any = "", raw_host: Any = "", raw_port: Any = "") -> str:
+    target_key = _firmware_profile_key_for_target(raw_host, raw_port)
+    template = str(template_key or "").strip().lower()
+    if target_key and template:
+        return f"{target_key}:template:{template}"
+    return target_key or template
+
+
+def _firmware_cache_slug(*parts: Any) -> str:
+    raw = "__".join(str(part or "").strip() for part in parts if str(part or "").strip())
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-")
+    return (slug[:96] or "default").lower()
+
+
+def _firmware_build_cache_path(
+    template_key: str,
+    normalized: Dict[str, str],
+    host: str,
+    port: Any = None,
+    identity_key: str = "",
+    friendly_key: str = "",
+) -> Path:
+    normalized_host, normalized_port = _firmware_profile_target(host, port)
+    template_slug = _firmware_cache_slug(template_key, "template")
+    identity_key = str(identity_key or "").strip()
+    friendly_key = str(friendly_key or "").strip()
+    device_identity = (
+        (normalized.get(identity_key) if identity_key else "")
+        or (normalized.get(friendly_key) if friendly_key else "")
+        or normalized.get("node_name")
+        or normalized.get("device_name")
+        or normalized.get("friendly_name")
+        or normalized.get("name")
+        or normalized_host
+        or "device"
+    )
+    target_slug = _firmware_cache_slug(device_identity, normalized_host, normalized_port)
+    return FIRMWARE_CACHE_DIR / "builds" / template_slug / target_slug
+
+
+def _load_firmware_profile(template_key: str, profile_key: str = "") -> Dict[str, str]:
+    profiles = _load_firmware_profiles()
+    profile = profiles.get(profile_key) if profile_key else None
+    if isinstance(profile, dict):
+        return dict(profile)
+    if profile_key and ":template:" in profile_key:
+        legacy_device_key = profile_key.split(":template:", 1)[0]
+        legacy_device = profiles.get(legacy_device_key)
+        if isinstance(legacy_device, dict):
+            return dict(legacy_device)
+    legacy = profiles.get(template_key)
+    return dict(legacy) if isinstance(legacy, dict) else {}
+
+
+def _firmware_profile_values_for_template(profile: Dict[str, Any], substitutions: Dict[str, Any]) -> Dict[str, str]:
+    keep_keys = {str(key or "").strip() for key in substitutions.keys()}
+    keep_keys.update({"__target_host", "__target_port", "wake_sound_catalog", "wake_word_choice"})
+    return {
+        key: str(profile.get(key) or "")
+        for key in keep_keys
+        if key and key in profile
+    }
+
+
+def _normalize_firmware_profile_update(template_key: str, values: Dict[str, Any], profile_key: str = "") -> Dict[str, str]:
+    ctx = _load_firmware_template_context(template_key, profile_key)
     spec = ctx["spec"]
     profile = ctx.get("profile") if isinstance(ctx.get("profile"), dict) else {}
     substitutions = ctx["substitutions"]
-    normalized: Dict[str, str] = dict(profile)
+    normalized = _firmware_profile_values_for_template(profile, substitutions)
     fixed_keys = set(spec.get("fixed_keys") or set())
     identity_key = str(spec.get("identity_key") or "").strip()
     if identity_key:
@@ -1286,6 +1474,12 @@ def _normalize_firmware_profile_update(template_key: str, values: Dict[str, Any]
             elif key_text not in normalized:
                 normalized[key_text] = "true" if str(default).lower() == "true" else "false"
             continue
+        if key_text == "wake_word_model_url":
+            if key_text in values:
+                normalized[key_text] = _local_trained_wake_word_url(values.get(key_text))
+            elif key_text not in normalized:
+                normalized[key_text] = ""
+            continue
         if key_text in values:
             normalized[key_text] = str(values.get(key_text) or "").strip()
         elif key_text not in normalized:
@@ -1294,6 +1488,11 @@ def _normalize_firmware_profile_update(template_key: str, values: Dict[str, Any]
     wake_word_choice = str(values.get("wake_word_choice") or "").strip()
     if wake_word_choice:
         normalized["wake_word_choice"] = wake_word_choice
+    wake_sound_choice = str(values.get("wake_sound_catalog") or "").strip()
+    if wake_sound_choice:
+        normalized["wake_sound_catalog"] = wake_sound_choice
+        if wake_sound_choice != "__custom__" and "wake_word_triggered_sound_file" in substitutions:
+            normalized["wake_word_triggered_sound_file"] = wake_sound_choice
 
     target_host = str(values.get("__target_host") or "").strip()
     target_port = str(values.get("__target_port") or "").strip()
@@ -1307,7 +1506,38 @@ def _normalize_firmware_profile_update(template_key: str, values: Dict[str, Any]
     return normalized
 
 
-def _load_firmware_template_context(template_key: str) -> Dict[str, Any]:
+def _local_trained_wake_word_url(value: Any) -> str:
+    url = str(value or "").strip()
+    return url if "/api/trained_wake_words/" in url else ""
+
+
+def _selected_trained_wake_word(
+    trained_wake_words: List[Dict[str, Any]],
+    profile: Dict[str, Any],
+    substitutions: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    if not trained_wake_words:
+        return None
+
+    saved_choice = str(profile.get("wake_word_choice") or "").strip()
+    current_wake_word_name = str(
+        profile.get("wake_word_name") or _template_default_string(substitutions.get("wake_word_name"))
+    ).strip()
+    current_wake_word_url = str(profile.get("wake_word_model_url") or "").strip()
+
+    def match(predicate):
+        return next((row for row in trained_wake_words if predicate(row)), None)
+
+    return (
+        match(lambda row: str(row.get("key") or "") == saved_choice)
+        or match(lambda row: str(row.get("json_url") or "") == current_wake_word_url)
+        or match(lambda row: str(row.get("model_url") or "") == current_wake_word_url)
+        or match(lambda row: str(row.get("wake_word_name") or "") == current_wake_word_name)
+        or trained_wake_words[0]
+    )
+
+
+def _load_firmware_template_context(template_key: str, profile_key: str = "") -> Dict[str, Any]:
     spec = _firmware_template_spec(template_key)
     raw_text, source_label = _load_firmware_template_text(spec)
     parsed = yaml.load(raw_text, Loader=_FirmwareYamlLoader)
@@ -1323,12 +1553,12 @@ def _load_firmware_template_context(template_key: str) -> Dict[str, Any]:
         "template_doc": parsed,
         "substitutions": dict(substitutions),
         "sections": _extract_substitution_sections(raw_text),
-        "profile": _load_firmware_profiles().get(str(spec.get("key") or ""), {}),
+        "profile": _load_firmware_profile(str(spec.get("key") or ""), profile_key),
     }
 
 
-def _firmware_template_fields(template_key: str, base_url: str = "") -> List[Dict[str, Any]]:
-    ctx = _load_firmware_template_context(template_key)
+def _firmware_template_fields(template_key: str, base_url: str = "", profile_key: str = "") -> List[Dict[str, Any]]:
+    ctx = _load_firmware_template_context(template_key, profile_key)
     spec = ctx["spec"]
     profile = ctx.get("profile") if isinstance(ctx.get("profile"), dict) else {}
     fields: List[Dict[str, Any]] = []
@@ -1338,18 +1568,11 @@ def _firmware_template_fields(template_key: str, base_url: str = "") -> List[Dic
         fixed_keys.add(identity_key)
     hidden_keys = {"ha_voice_ip"} | set(spec.get("auto_keys") or set())
     trained_wake_words = _list_trained_wake_words(base_url)
-    current_wake_word_name = str(
-        profile.get("wake_word_name") or _template_default_string(ctx["substitutions"].get("wake_word_name"))
-    ).strip()
-    saved_wake_word_choice = str(profile.get("wake_word_choice") or "").strip()
-    selected_wake_word = next(
-        (row["key"] for row in trained_wake_words if row.get("key") == saved_wake_word_choice),
-        "",
-    ) or next(
-        (row["key"] for row in trained_wake_words if row.get("wake_word_name") == current_wake_word_name),
-        "",
-    )
+    wake_sound_catalog = _load_wake_sound_catalog()
+    selected_wake_word_row = _selected_trained_wake_word(trained_wake_words, profile, ctx["substitutions"])
+    selected_wake_word = str(selected_wake_word_row.get("key") or "") if selected_wake_word_row else ""
     wake_picker_added = False
+    wake_sound_picker_added = False
 
     for key, raw_value in ctx["substitutions"].items():
         key_text = str(key or "").strip()
@@ -1375,6 +1598,35 @@ def _firmware_template_fields(template_key: str, base_url: str = "") -> List[Dic
             )
             wake_picker_added = True
 
+        if key_text == "wake_word_triggered_sound_file" and not wake_sound_picker_added:
+            wake_sound_entries = wake_sound_catalog.get("entries") if isinstance(wake_sound_catalog.get("entries"), list) else []
+            current_sound_url = str(profile.get(key_text) or _template_default_string(raw_value) or "").strip()
+            saved_sound_choice = str(profile.get("wake_sound_catalog") or "").strip()
+            available_sound_urls = {str(row.get("value") or "") for row in wake_sound_entries if isinstance(row, dict)}
+            if saved_sound_choice in available_sound_urls or saved_sound_choice == "__custom__":
+                picker_value = saved_sound_choice
+            else:
+                picker_value = current_sound_url if current_sound_url in available_sound_urls else "__custom__"
+            description = (
+                f"Choose from {len(wake_sound_entries)} prebuilt wake sounds, or leave this on Custom URL and paste your own audio URL below."
+                if wake_sound_entries
+                else "Prebuilt wake-sound catalog is unavailable right now. You can still paste any custom audio URL below."
+            )
+            if wake_sound_catalog.get("warning") and not wake_sound_entries:
+                description = f"{description} {wake_sound_catalog['warning']}".strip()
+            fields.append(
+                {
+                    "key": "wake_sound_catalog",
+                    "label": "Prebuilt Wake Sound",
+                    "type": "wake_sound_select",
+                    "value": picker_value,
+                    "options": _wake_sound_picker_options(wake_sound_catalog),
+                    "description": description,
+                    "section": "Wake Sound",
+                }
+            )
+            wake_sound_picker_added = True
+
         default = _template_default_string(raw_value)
         saved = str(profile.get(key_text) or "")
         field_type = "text"
@@ -1399,11 +1651,20 @@ def _firmware_template_fields(template_key: str, base_url: str = "") -> List[Dic
             placeholder = "Your Wi-Fi SSID"
             description = "Required before build + flash."
         elif key_text == "wake_word_model_url":
-            placeholder = "https://.../wake_word.json"
+            value = str(selected_wake_word_row.get("json_url") or "") if selected_wake_word_row else ""
+            placeholder = "Train or select a local wake word first"
+            description = "Filled from the local trained wake-word picker."
         elif key_text == "wake_word_name":
+            if selected_wake_word_row:
+                value = str(selected_wake_word_row.get("wake_word_name") or selected_wake_word_row.get("key") or "")
             placeholder = "hey_tater"
+        elif key_text == "wake_word_triggered_sound_file":
+            placeholder = "https://.../wake-sound.mp3"
+            description = "Pick a prebuilt wake sound above or paste any custom audio URL."
         section = ctx["sections"].get(key_text) or "Firmware"
-        if key_text in {"wake_word_name", "wake_word_model_url"}:
+        if key_text == "wake_word_triggered_sound_file":
+            section = "Wake Sound"
+        elif key_text in {"wake_word_name", "wake_word_model_url"}:
             section = "Micro Wake Word"
         elif key_text.endswith("_sound_file"):
             section = "Sounds"
@@ -1437,12 +1698,19 @@ def _esphome_pythonpath() -> str:
     return os.pathsep.join(paths)
 
 
-def _render_firmware_config(template_key: str, values: Dict[str, Any], host: str, session_id: str) -> tuple[Path, Dict[str, str]]:
-    ctx = _load_firmware_template_context(template_key)
+def _render_firmware_config(
+    template_key: str,
+    values: Dict[str, Any],
+    host: str,
+    session_id: str,
+    port: Any = None,
+) -> tuple[Path, Dict[str, str], Path]:
+    profile_key = _firmware_profile_key(template_key, host, port)
+    ctx = _load_firmware_template_context(template_key, profile_key)
     spec = ctx["spec"]
     profile = ctx.get("profile") if isinstance(ctx.get("profile"), dict) else {}
     substitutions = ctx["substitutions"]
-    normalized: Dict[str, str] = dict(profile)
+    normalized = _firmware_profile_values_for_template(profile, substitutions)
     fixed_keys = set(spec.get("fixed_keys") or set())
     identity_key = str(spec.get("identity_key") or "").strip()
     if identity_key:
@@ -1461,10 +1729,15 @@ def _render_firmware_config(template_key: str, values: Dict[str, Any], host: str
             normalized[key_text] = "true" if bool(raw_value) else "false"
         elif key_text == "ha_voice_ip":
             normalized[key_text] = host
+        elif key_text == "wake_word_model_url":
+            normalized[key_text] = _local_trained_wake_word_url(raw_value)
         else:
             normalized[key_text] = str(raw_value if raw_value is not None else "").strip() or _template_default_string(
                 substitutions.get(key_text)
             )
+    wake_sound_choice = str(values.get("wake_sound_catalog") or "").strip()
+    if wake_sound_choice and wake_sound_choice != "__custom__" and "wake_word_triggered_sound_file" in substitutions:
+        normalized["wake_word_triggered_sound_file"] = wake_sound_choice
 
     missing = []
     if not normalized.get("wifi_ssid"):
@@ -1473,22 +1746,36 @@ def _render_firmware_config(template_key: str, values: Dict[str, Any], host: str
         missing.append("Wi-Fi password")
     if not host:
         missing.append("device IP or hostname")
+    if "wake_word_model_url" in substitutions and not normalized.get("wake_word_model_url"):
+        missing.append("local trained wake word")
     if missing:
         raise RuntimeError(f"Missing required firmware values: {', '.join(missing)}.")
 
     config = copy.deepcopy(ctx["template_doc"])
     config["substitutions"] = {key: str(normalized.get(key, "")) for key in substitutions.keys()}
+    build_path = _firmware_build_cache_path(
+        str(spec.get("key") or template_key),
+        normalized,
+        host,
+        port,
+        str(spec.get("identity_key") or ""),
+        str(spec.get("friendly_key") or ""),
+    )
     esphome_block = config.get("esphome") if isinstance(config.get("esphome"), dict) else None
     if isinstance(esphome_block, dict):
-        esphome_block["build_path"] = str(FIRMWARE_CACHE_DIR / "builds" / session_id / str(spec.get("key") or template_key))
+        esphome_block["build_path"] = str(build_path)
         config["esphome"] = esphome_block
 
     session_dir = FIRMWARE_CACHE_DIR / "configs" / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
-    config_path = session_dir / f"{str(spec.get('key') or template_key)}.yaml"
+    config_path = session_dir / f"{build_path.parent.name}__{build_path.name}.yaml"
     config_path.write_text(yaml.dump(config, Dumper=_FirmwareYamlDumper, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    _save_firmware_profile(str(spec.get("key") or template_key), normalized)
-    return config_path, normalized
+    normalized_host, normalized_port = _firmware_profile_target(host, port)
+    if normalized_host:
+        normalized["__target_host"] = normalized_host
+        normalized["__target_port"] = normalized_port
+    _save_firmware_profile(profile_key or str(spec.get("key") or template_key), normalized)
+    return config_path, normalized, build_path
 
 
 def _firmware_session_payload(session_id: str) -> Dict[str, Any]:
@@ -1538,11 +1825,13 @@ def _firmware_runner_env(*, include_esphome_pythonpath: bool = False) -> Dict[st
     FIRMWARE_HOME_DIR.mkdir(parents=True, exist_ok=True)
     FIRMWARE_XDG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     FIRMWARE_PLATFORMIO_DIR.mkdir(parents=True, exist_ok=True)
+    FIRMWARE_ESPHOME_DATA_DIR.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env["PYTHONUNBUFFERED"] = "1"
     env["HOME"] = str(FIRMWARE_HOME_DIR)
     env["XDG_CACHE_HOME"] = str(FIRMWARE_XDG_CACHE_DIR)
+    env["ESPHOME_DATA_DIR"] = str(FIRMWARE_ESPHOME_DATA_DIR)
     env["PLATFORMIO_CORE_DIR"] = str(FIRMWARE_PLATFORMIO_DIR)
     env["PLATFORMIO_CACHE_DIR"] = str(FIRMWARE_PLATFORMIO_DIR / "cache")
     if include_esphome_pythonpath:
@@ -1691,7 +1980,7 @@ def _run_firmware_build_flash_background(session_id: str):
         values = session.get("values") if isinstance(session.get("values"), dict) else {}
 
     try:
-        config_path, _normalized = _render_firmware_config(template_key, values, host, session_id)
+        config_path, normalized, build_path = _render_firmware_config(template_key, values, host, session_id, port)
     except Exception as exc:
         _append_firmware_log(session_id, f"✗ Failed to prepare firmware config: {exc}")
         with FIRMWARE_LOCK:
@@ -1718,6 +2007,9 @@ def _run_firmware_build_flash_background(session_id: str):
     _append_firmware_log(session_id, f"→ Template: {template_key}")
     _append_firmware_log(session_id, f"→ Device: {host}:{port}")
     _append_firmware_log(session_id, f"→ Config: {config_path}")
+    _append_firmware_log(session_id, f"→ Build cache: {build_path}")
+    if normalized.get("wake_word_triggered_sound_file"):
+        _append_firmware_log(session_id, f"→ Wake sound: {normalized['wake_word_triggered_sound_file']}")
     _append_firmware_log(session_id, "→ Running: " + " ".join(command))
 
     try:
@@ -2264,28 +2556,30 @@ def firmware_devices():
 
 
 @app.get("/api/firmware/templates")
-def firmware_templates(request: Request):
+def firmware_templates(request: Request, target_host: str = "", target_port: str = ""):
     templates = []
     warnings = []
     base_url = _request_base_url(request)
     wake_words = _list_trained_wake_words(base_url)
-    profiles = _load_firmware_profiles()
+    selected_host, selected_port = _firmware_profile_target(target_host, target_port)
     for spec in FIRMWARE_TEMPLATE_SPECS:
         key = str(spec.get("key") or "")
-        profile = profiles.get(key, {})
-        target_port = str(profile.get("__target_port") or "")
-        if target_port == "6053":
-            target_port = str(FIRMWARE_DEFAULT_OTA_PORT)
+        profile_key = _firmware_profile_key(key, target_host, target_port)
+        profile = _load_firmware_profile(key, profile_key)
+        row_target_host = selected_host or str(profile.get("__target_host") or "")
+        row_target_port = selected_port or str(profile.get("__target_port") or "")
+        if row_target_port == "6053":
+            row_target_port = str(FIRMWARE_DEFAULT_OTA_PORT)
         row = {
             "value": key,
             "label": str(spec.get("label") or key),
             "source_url": _firmware_raw_url(str(spec.get("path") or "")),
-            "target_host": str(profile.get("__target_host") or ""),
-            "target_port": target_port,
+            "target_host": row_target_host,
+            "target_port": row_target_port,
             "fields": [],
         }
         try:
-            row["fields"] = _firmware_template_fields(key, base_url)
+            row["fields"] = _firmware_template_fields(key, base_url, profile_key)
         except Exception as exc:
             warnings.append(f"{row['label']}: {exc}")
         templates.append(row)
@@ -2305,11 +2599,12 @@ def firmware_profile(payload: Dict[str, Any]):
         template_key = str(body.get("template_key") or "").strip()
         _firmware_template_spec(template_key)
         values = body.get("values") if isinstance(body.get("values"), dict) else {}
-        saved = _normalize_firmware_profile_update(template_key, values)
-        _save_firmware_profile(template_key, saved)
+        profile_key = _firmware_profile_key(template_key, values.get("__target_host"), values.get("__target_port"))
+        saved = _normalize_firmware_profile_update(template_key, values, profile_key)
+        _save_firmware_profile(profile_key or template_key, saved)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-    return {"ok": True, "template_key": template_key, "saved_fields": sorted(saved.keys())}
+    return {"ok": True, "template_key": template_key, "profile_key": profile_key or template_key, "saved_fields": sorted(saved.keys())}
 
 
 @app.get("/api/trained_wake_words/catalog")
@@ -2377,7 +2672,7 @@ def firmware_clean():
         return JSONResponse({"ok": False, "error": f"Wait for active firmware session(s) to finish: {', '.join(active[:3])}."}, status_code=400)
 
     removed = []
-    for child in ("configs", "builds", "platformio", "home", "cache"):
+    for child in ("configs", "builds", "platformio", "home", "cache", "esphome_data"):
         path = FIRMWARE_CACHE_DIR / child
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
