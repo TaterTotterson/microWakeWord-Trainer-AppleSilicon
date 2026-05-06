@@ -22,6 +22,13 @@ def validate(paths):
     print(f"✅ Validated all {len(paths)} dataset directories")
 
 
+def env_bool(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 impulse_paths = ["mit_rirs"]
 background_paths = [
     "wham_16k",
@@ -67,7 +74,7 @@ if os.path.exists("./negative_samples") and any(Path("./negative_samples").glob(
         input_directory="./negative_samples",
         file_pattern="*.wav",
         max_clip_duration_s=5,
-        remove_silence=False,
+        remove_silence=True,
         random_split_seed=10,
         split_count=0.1,
     )
@@ -103,6 +110,15 @@ split_cfg = {
     "validation": {"name": "validation", "repetition": 1, "slide_frames": 10},
     "testing":    {"name": "test",       "repetition": 1, "slide_frames": 1},
 }
+
+reviewed_negative_slide_frames = int(os.environ.get("MWW_REVIEWED_NEGATIVE_SLIDE_FRAMES", "131"))
+personal_train_all_raw = env_bool("MWW_PERSONAL_TRAIN_ALL_RAW", True)
+reviewed_negative_train_all_raw = env_bool("MWW_REVIEWED_NEGATIVE_TRAIN_ALL_RAW", True)
+print(
+    "🎯 Raw guardrail training: "
+    f"personal_train_all={personal_train_all_raw}, "
+    f"reviewed_negative_train_all={reviewed_negative_train_all_raw}"
+)
 
 # Process TTS samples
 for split, cfg in split_cfg.items():
@@ -141,9 +157,13 @@ if clips_personal is not None:
             slide_frames=cfg["slide_frames"],
             step_ms=10,
         )
+        split_name = None if split == "training" and personal_train_all_raw else cfg["name"]
         RaggedMmap.from_generator(
             out_dir=str(out_dir / "wakeword_mmap"),
-            sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
+            sample_generator=spectros.spectrogram_generator(
+                split=split_name,
+                repeat=cfg["repetition"],
+            ),
             batch_size=100,
             verbose=True,
         )
@@ -156,16 +176,21 @@ if clips_reviewed_negative is not None:
         out_dir = out_root_negative / split
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"🧪 Processing {split} (reviewed negatives) …")
+        print(f"   Dense hard-negative windows: {reviewed_negative_slide_frames} offsets")
         print("⏳ Building reviewed negative spectrogram mmap; first progress update can take a moment…")
         spectros = SpectrogramGeneration(
             clips=clips_reviewed_negative,
             augmenter=augmenter,
-            slide_frames=cfg["slide_frames"],
+            slide_frames=reviewed_negative_slide_frames,
             step_ms=10,
         )
+        split_name = None if split == "training" and reviewed_negative_train_all_raw else cfg["name"]
         RaggedMmap.from_generator(
             out_dir=str(out_dir / "wakeword_mmap"),
-            sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
+            sample_generator=spectros.spectrogram_generator(
+                split=split_name,
+                repeat=cfg["repetition"],
+            ),
             batch_size=100,
             verbose=True,
         )

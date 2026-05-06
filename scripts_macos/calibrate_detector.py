@@ -197,12 +197,12 @@ def _load_config(config_path: Path) -> dict:
 def _load_eval_sets(
     handler: FeatureHandler,
     config: dict,
-) -> tuple[str, str, list[np.ndarray], list[np.ndarray]]:
+) -> tuple[str, str, list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
     for positive_mode, ambient_mode in (
         ("validation", "validation_ambient"),
         ("testing", "testing_ambient"),
     ):
-        positive_tracks, labels, _ = handler.get_data(
+        labeled_tracks, labels, _ = handler.get_data(
             positive_mode,
             batch_size=config["batch_size"],
             features_length=config["spectrogram_length"],
@@ -216,12 +216,17 @@ def _load_eval_sets(
         )
         positives = [
             np.asarray(track)
-            for track, label in zip(positive_tracks, labels)
+            for track, label in zip(labeled_tracks, labels)
             if bool(label)
         ]
+        hard_negatives = [
+            np.asarray(track)
+            for track, label in zip(labeled_tracks, labels)
+            if not bool(label)
+        ]
         ambient = [np.asarray(track) for track in ambient_tracks]
-        if positives and ambient:
-            return positive_mode, ambient_mode, positives, ambient
+        if positives and (ambient or hard_negatives):
+            return positive_mode, ambient_mode, positives, ambient, hard_negatives
     raise RuntimeError(
         "No suitable validation/testing data was found for detector calibration."
     )
@@ -281,18 +286,26 @@ def main() -> int:
     config["flags"] = config.get("flags", {})
     handler = FeatureHandler(config)
 
-    positive_mode, ambient_mode, positive_tracks, ambient_tracks = _load_eval_sets(
+    (
+        positive_mode,
+        ambient_mode,
+        positive_tracks,
+        ambient_tracks,
+        hard_negative_tracks,
+    ) = _load_eval_sets(
         handler, config
     )
+    rejection_tracks = ambient_tracks + hard_negative_tracks
 
     print(
         f"→ Using {positive_mode} positives ({len(positive_tracks)}) and "
-        f"{ambient_mode} ambient tracks ({len(ambient_tracks)})"
+        f"{ambient_mode} ambient tracks ({len(ambient_tracks)}) plus "
+        f"labeled hard negatives ({len(hard_negative_tracks)})"
     )
 
     model = Model(str(model_path), stride=config["stride"])
     positive_predictions = _predict_tracks(model, positive_tracks, "positive")
-    ambient_predictions = _predict_tracks(model, ambient_tracks, "ambient")
+    ambient_predictions = _predict_tracks(model, rejection_tracks, "rejection")
 
     candidates: list[dict[str, float]] = []
     best_by_window: list[dict[str, float]] = []
@@ -384,6 +397,8 @@ def main() -> int:
             "ambient_dataset": ambient_mode,
             "positive_tracks": len(positive_tracks),
             "ambient_tracks": len(ambient_tracks),
+            "hard_negative_tracks": len(hard_negative_tracks),
+            "rejection_tracks": len(rejection_tracks),
             "cooldown_slices": int(args.cooldown_slices),
             "positive_skip_slices": int(args.positive_skip_slices),
             "window_sizes": window_sizes,

@@ -3,6 +3,7 @@
 # trainer_server.py
 import contextlib
 import copy
+import hashlib
 import io
 import os
 import re
@@ -54,6 +55,17 @@ PIPER_CATALOG_CACHE_FILE = Path(
     )
 ).resolve()
 DEFAULT_LANGUAGE = os.environ.get("MWW_LANGUAGE", "en")
+MANUAL_LANGUAGE_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    # Piper's upstream voice catalog currently does not list Korean. Keep it
+    # selectable and route missing Piper voices through the repo Qwen fallback.
+    "ko": {
+        "code": "ko",
+        "label": "Korean (ko, Qwen fallback)",
+        "name": "Korean",
+        "voice_count": 0,
+        "regions": ["South Korea"],
+    },
+}
 
 TAKES_PER_SPEAKER_DEFAULT = int(os.environ.get("REC_TAKES_PER_SPEAKER", "10"))
 SPEAKERS_TOTAL_DEFAULT = int(os.environ.get("REC_SPEAKERS_TOTAL", "1"))
@@ -108,7 +120,13 @@ def safe_name(raw: str) -> str:
     s = re.sub(r"\s+", "_", s)
     s = re.sub(r"[^a-z0-9_]+", "", s)
     s = re.sub(r"^_+|_+$", "", s)
-    return s or "wakeword"
+    if s:
+        return s
+    raw_clean = (raw or "").strip()
+    if not raw_clean:
+        return "wakeword"
+    digest = hashlib.sha1(raw_clean.encode("utf-8")).hexdigest()[:8]
+    return f"wakeword_{digest}"
 
 
 # -------------------- In-memory session state --------------------
@@ -343,6 +361,7 @@ def _fetch_piper_catalog() -> Dict[str, Any] | None:
 
 
 def _read_cached_piper_catalog_file() -> Dict[str, Any] | None:
+    proc = None
     try:
         if not PIPER_CATALOG_CACHE_FILE.exists():
             return None
@@ -434,6 +453,9 @@ def _available_languages() -> List[Dict[str, Any]]:
         region = str(language.get("country_english") or language.get("region") or "").strip()
         _register_language(languages, family=family, name=name, region=region, count=0)
 
+    for code, entry in MANUAL_LANGUAGE_OVERRIDES.items():
+        languages.setdefault(code, copy.deepcopy(entry))
+
     ordered = [languages["en"]]
     ordered.extend(
         sorted(
@@ -498,6 +520,14 @@ def _ensure_non_english_language_voices(language_family: str, log) -> Dict[str, 
                 "downloaded_files": 0,
                 "existing_files": len(local_voices),
                 "voices": len(local_voices),
+            }
+        if language_family == "ko":
+            log("===== Korean TTS =====")
+            log("→ No Piper Korean voice found; using the wakeword repo Qwen TTS fallback.")
+            return {
+                "downloaded_files": 0,
+                "existing_files": 0,
+                "voices": 0,
             }
         raise RuntimeError(
             f"No Piper ONNX voices found for language '{language_family}' in the upstream catalog."
@@ -874,6 +904,15 @@ def _save_personal_sample(data: bytes, original_name: str, out_name: str | None 
     )
 
 
+def _save_negative_sample(data: bytes, original_name: str, out_name: str | None = None) -> Dict[str, Any]:
+    return _save_audio_sample(
+        data,
+        original_name,
+        target_dir=NEGATIVE_DIR,
+        out_name=out_name or _next_negative_sample_name(original_name),
+    )
+
+
 def _save_captured_sample(data: bytes, original_name: str, out_name: str | None = None) -> Dict[str, Any]:
     return _save_audio_sample(
         data,
@@ -1044,9 +1083,10 @@ def _append_train_log(line: str):
             del buf[: len(buf) - 250]
 
 
-def _run_training_background(safe_word: str, language: str):
+def _run_training_background(raw_phrase: str, safe_word: str, language: str):
+    train_phrase = (raw_phrase or safe_word or "wakeword").strip()
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
-    cmd = ["bash", TRAIN_SCRIPT, safe_word]
+    cmd = ["bash", TRAIN_SCRIPT, train_phrase]
 
     with STATE_LOCK:
         STATE["training"]["running"] = True
@@ -1058,6 +1098,8 @@ def _run_training_background(safe_word: str, language: str):
 
     _append_train_log(f"→ Running: {' '.join(cmd)}")
     _append_train_log(f"→ Language: {language}")
+    if train_phrase != safe_word:
+        _append_train_log(f"→ Artifact safe name: {safe_word}")
 
     try:
         if language != "en":
@@ -1066,12 +1108,15 @@ def _run_training_background(safe_word: str, language: str):
         with open(log_path, "w", encoding="utf-8") as lf:
             env = os.environ.copy()
             env["MWW_LANGUAGE"] = language
+            env["MWW_ARTIFACT_SAFE_WORD"] = safe_word
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(ROOT_DIR),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 env=env,
             )
@@ -1083,11 +1128,21 @@ def _run_training_background(safe_word: str, language: str):
 
             rc = proc.wait()
 
-        _append_train_log(f"✓ Training finished (exit_code={rc})")
+        if rc == 0:
+            _append_train_log(f"✓ Training finished (exit_code={rc})")
+        else:
+            _append_train_log(f"✗ Training failed (exit_code={rc})")
         with STATE_LOCK:
             STATE["training"]["exit_code"] = rc
 
     except Exception as e:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
         _append_train_log(f"✗ Training crashed: {e!r}")
         with STATE_LOCK:
             STATE["training"]["exit_code"] = 999
@@ -1965,12 +2020,6 @@ async def upload_take(
 
 @app.post("/api/upload_personal_sample")
 async def upload_personal_sample(file: UploadFile = File(...)):
-    with STATE_LOCK:
-        safe_word = STATE["safe_word"]
-
-    if not safe_word:
-        return JSONResponse({"ok": False, "error": "No active session. Call /api/start_session first."}, status_code=400)
-
     data = await file.read()
     try:
         result = _save_personal_sample(data, file.filename or "sample")
@@ -1979,6 +2028,18 @@ async def upload_personal_sample(file: UploadFile = File(...)):
 
     takes = _sync_personal_samples_state()
     return {"ok": True, **result, "takes_received": len(takes)}
+
+
+@app.post("/api/upload_negative_sample")
+async def upload_negative_sample(file: UploadFile = File(...)):
+    data = await file.read()
+    try:
+        result = _save_negative_sample(data, file.filename or "negative")
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    samples = _samples_payload()
+    return {"ok": True, **result, "negative_count": samples["negative_count"]}
 
 
 @app.post("/api/upload_captured_audio")
@@ -2395,6 +2456,7 @@ def train_now(payload: Dict[str, Any] = None):
 
     with STATE_LOCK:
         safe_word = STATE["safe_word"]
+        raw_phrase = STATE["raw_phrase"] or safe_word
         language = (STATE.get("language") or DEFAULT_LANGUAGE)
         takes_received = int(STATE["takes_received"])
         speakers_total = int(STATE["speakers_total"])
@@ -2424,7 +2486,11 @@ def train_now(payload: Dict[str, Any] = None):
     if not Path(TRAIN_SCRIPT).exists():
         return JSONResponse({"ok": False, "error": f"TRAIN_SCRIPT not found: {TRAIN_SCRIPT}"}, status_code=500)
 
-    t = threading.Thread(target=_run_training_background, args=(safe_word, language), daemon=True)
+    t = threading.Thread(
+        target=_run_training_background,
+        args=(raw_phrase, safe_word, language),
+        daemon=True,
+    )
     t.start()
 
     return {

@@ -10,6 +10,7 @@
 
 set -euo pipefail
 
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_WORD="${1:-hey_tater}"
 MAX_TTS_SAMPLES="${2:-50000}"
 BATCH_SIZE="${3:-100}"
@@ -34,6 +35,12 @@ if [[ -z "$LANGUAGE" ]]; then
 fi
 export MWW_LANGUAGE="$LANGUAGE"
 echo "🌐 Training language: $LANGUAGE"
+
+USE_QWEN_TTS=false
+TTS_BACKEND="piper"
+QWEN_PROJECT_ROOT="${MWW_QWEN_PROJECT_ROOT:-$(cd "$SCRIPT_ROOT/../.." && pwd)}"
+QWEN_PYTHON="${MWW_QWEN_PYTHON:-$QWEN_PROJECT_ROOT/.venv/bin/python}"
+QWEN_TTS_MODEL_ID="${MWW_QWEN_MODEL_ID:-Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
@@ -81,6 +88,7 @@ KERAS_VERSION="${KERAS_VERSION:-3.3.3}"
 PROTOBUF_VERSION="${PROTOBUF_VERSION:-4.25.8}"
 FLATBUFFERS_VERSION="${FLATBUFFERS_VERSION:-23.5.26}"
 TORCH_VERSION="${TORCH_VERSION:-2.9.0}"
+TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-${TORCH_VERSION}}"
 
 if [[ ! -d ".venv" ]]; then
   echo "🧪 Creating ARM64 venv with $PYTHON_BIN"
@@ -98,6 +106,40 @@ if [[ ! -x "$PY" ]]; then
   exit 1
 fi
 export PYTHONUNBUFFERED=1
+export TORCH_VERSION TORCHAUDIO_VERSION
+
+ensure_torch_audio_stack() {
+  if "$PY" - <<PY
+import importlib.metadata as md
+import sys
+
+expected = {
+    "torch": "${TORCH_VERSION}",
+    "torchaudio": "${TORCHAUDIO_VERSION}",
+}
+
+bad = []
+for package, expected_version in expected.items():
+    try:
+        actual = md.version(package).split("+", 1)[0]
+    except md.PackageNotFoundError:
+        actual = "<missing>"
+    if actual != expected_version:
+        bad.append((package, actual, expected_version))
+
+if bad:
+    print("Torch stack drift detected:")
+    for package, actual, expected_version in bad:
+        print(f"  - {package}: {actual} (expected {expected_version})")
+    sys.exit(1)
+PY
+  then
+    echo "✅ Torch audio stack verified."
+  else
+    echo "🧯 Repairing torch audio stack to torch==${TORCH_VERSION}, torchaudio==${TORCHAUDIO_VERSION}…"
+    "$PY" -m pip install -q "torch==${TORCH_VERSION}" "torchaudio==${TORCHAUDIO_VERSION}"
+  fi
+}
 
 if [[ ! -f ".venv/.pinned_installed" ]]; then
   echo "🧹 Fresh venv → installing pinned toolchain"
@@ -112,7 +154,7 @@ if [[ ! -f ".venv/.pinned_installed" ]]; then
     "tensorflow-metal==${TF_METAL_VERSION}"
 
   # Pinned torch stack
-  "$PY" -m pip install "torch==${TORCH_VERSION}"
+  "$PY" -m pip install "torch==${TORCH_VERSION}" "torchaudio==${TORCHAUDIO_VERSION}"
 
   touch ".venv/.pinned_installed"
 else
@@ -151,19 +193,26 @@ case "$PYVER" in
      exit 1 ;;
 esac
 
+ensure_torch_audio_stack
+
 # ── HARD FAIL: verify pinned versions (no silent drift) ──────────────────────
 "$PY" - <<PY
 import sys
+import importlib.metadata as md
 import tensorflow as tf
 import keras
 import google.protobuf
 import flatbuffers
+import torch
+import torchaudio
 
 expected = {
   "tensorflow": "${TF_VERSION}",
   "keras": "${KERAS_VERSION}",
   "protobuf": "${PROTOBUF_VERSION}",
   "flatbuffers": "${FLATBUFFERS_VERSION}",
+  "torch": "${TORCH_VERSION}",
+  "torchaudio": "${TORCHAUDIO_VERSION}",
 }
 
 actual = {
@@ -171,6 +220,8 @@ actual = {
   "keras": keras.__version__,
   "protobuf": google.protobuf.__version__,
   "flatbuffers": flatbuffers.__version__,
+  "torch": torch.__version__.split("+", 1)[0],
+  "torchaudio": md.version("torchaudio").split("+", 1)[0],
 }
 
 bad = [(k, actual[k], expected[k]) for k in expected if actual[k] != expected[k]]
@@ -203,6 +254,7 @@ fi
 
 # piper-sample-generator (TaterTotterson fork)
 bash scripts_macos/get_piper_generator.sh
+ensure_torch_audio_stack
 
 # ── verify Metal GPU (optional) ───────────────────────────────────────────────
 "$PY" - <<'PY'
@@ -233,16 +285,29 @@ if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
     language_voice_models=(piper-sample-generator/voices/"${LANGUAGE}"_*.onnx)
     shopt -u nullglob
     if [[ ${#language_voice_models[@]} -eq 0 ]]; then
-      echo "❌ No Piper ONNX voice models found for language '${LANGUAGE}'."
-      echo "   Expected files matching: piper-sample-generator/voices/${LANGUAGE}_*.onnx"
-      echo "   Add voice files or choose English (en)."
-      exit 1
+      if [[ "$LANGUAGE" == "ko" ]]; then
+        USE_QWEN_TTS=true
+        TTS_BACKEND="qwen"
+        MAX_TTS_SAMPLES="${MWW_QWEN_MAX_TTS_SAMPLES:-1000}"
+        echo "ℹ️  No Piper Korean voice found; using Qwen TTS from the wakeword repo."
+        echo "    QWEN_PROJECT_ROOT=$QWEN_PROJECT_ROOT"
+        echo "    QWEN_PYTHON=$QWEN_PYTHON"
+        echo "    QWEN_TTS_MODEL_ID=$QWEN_TTS_MODEL_ID"
+        echo "    Korean generated sample count: $MAX_TTS_SAMPLES (override with MWW_QWEN_MAX_TTS_SAMPLES)"
+      else
+        echo "❌ No Piper ONNX voice models found for language '${LANGUAGE}'."
+        echo "   Expected files matching: piper-sample-generator/voices/${LANGUAGE}_*.onnx"
+        echo "   Add voice files or choose English (en)."
+        exit 1
+      fi
     fi
-    echo "ℹ️  No --piper-model provided; using ${#language_voice_models[@]} voice model(s) for language '${LANGUAGE}':"
-    for vf in "${language_voice_models[@]}"; do
-      echo "    $vf"
-    done
-    PIPER_MODELS=("${language_voice_models[@]}")
+    if [[ "$USE_QWEN_TTS" != "true" ]]; then
+      echo "ℹ️  No --piper-model provided; using ${#language_voice_models[@]} voice model(s) for language '${LANGUAGE}':"
+      for vf in "${language_voice_models[@]}"; do
+        echo "    $vf"
+      done
+      PIPER_MODELS=("${language_voice_models[@]}")
+    fi
   fi
 fi
 
@@ -257,7 +322,7 @@ count_matching_files() {
   local dir="$1"
   local pattern="$2"
   if [[ -d "$dir" ]]; then
-    find "$dir" -type f -name "$pattern" 2>/dev/null | wc -l | tr -d ' '
+    find -L "$dir" -type f -name "$pattern" 2>/dev/null | wc -l | tr -d ' '
   else
     echo "0"
   fi
@@ -268,9 +333,41 @@ dir_has_matching_files() {
   local pattern="$2"
   local first_match=""
   if [[ -d "$dir" ]]; then
-    first_match=$(find "$dir" -type f -name "$pattern" -print -quit 2>/dev/null || true)
+    first_match=$(find -L "$dir" -type f -name "$pattern" -print -quit 2>/dev/null || true)
   fi
   [[ -n "$first_match" ]]
+}
+
+print_command() {
+  printf 'CMD:'
+  local arg
+  for arg in "$@"; do
+    printf ' %s' "$arg"
+  done
+  printf '\n'
+}
+
+reset_dir_contents() {
+  local dir="$1"
+  if [[ -L "$dir" ]]; then
+    local target
+    target="$("$PY" - "$dir" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+    if [[ -z "$target" || "$target" == "/" ]]; then
+      echo "❌ Refusing to clear unsafe symlink target for $dir: $target"
+      exit 1
+    fi
+    mkdir -p "$target"
+    find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  else
+    rm -rf "$dir"
+    mkdir -p "$dir"
+  fi
 }
 
 features_dir_ready() {
@@ -298,15 +395,73 @@ compute_sample_cache_key() {
     printf 'samples=%s\n' "$MAX_TTS_SAMPLES"
     printf 'batch=%s\n' "$BATCH_SIZE"
     printf 'language=%s\n' "$LANGUAGE"
-    stat -f 'generator_wrapper=%N:%m:%z' "scripts_macos/run_generator_with_progress.py"
-    for model_path in "${PIPER_MODELS[@]}"; do
-      if [[ -e "$model_path" ]]; then
-        stat -f 'model=%N:%m:%z' "$model_path"
-      else
-        printf 'model_missing=%s\n' "$model_path"
-      fi
-    done
+    printf 'tts_backend=%s\n' "$TTS_BACKEND"
+    if [[ "$USE_QWEN_TTS" == "true" ]]; then
+      printf 'qwen_project_root=%s\n' "$QWEN_PROJECT_ROOT"
+      printf 'qwen_python=%s\n' "$QWEN_PYTHON"
+      printf 'qwen_model=%s\n' "$QWEN_TTS_MODEL_ID"
+      for source_path in "$QWEN_PROJECT_ROOT/src/mcu_wakeword/cli.py" "$QWEN_PROJECT_ROOT/src/mcu_wakeword/qwen_synth.py"; do
+        if [[ -e "$source_path" ]]; then
+          stat -f 'qwen_source=%N:%m:%z' "$source_path"
+        else
+          printf 'qwen_source_missing=%s\n' "$source_path"
+        fi
+      done
+    else
+      stat -f 'generator_wrapper=%N:%m:%z' "scripts_macos/run_generator_with_progress.py"
+      for model_path in "${PIPER_MODELS[@]}"; do
+        if [[ -e "$model_path" ]]; then
+          stat -f 'model=%N:%m:%z' "$model_path"
+        else
+          printf 'model_missing=%s\n' "$model_path"
+        fi
+      done
+    fi
   } | shasum -a 256 | awk '{print $1}'
+}
+
+validate_qwen_tts() {
+  if [[ ! -f "$QWEN_PROJECT_ROOT/src/mcu_wakeword/cli.py" ]]; then
+    echo "❌ Korean fallback cannot find the wakeword repo at: $QWEN_PROJECT_ROOT"
+    echo "   Set MWW_QWEN_PROJECT_ROOT to /path/to/wakeword."
+    exit 1
+  fi
+  if [[ ! -x "$QWEN_PYTHON" ]]; then
+    echo "❌ Korean fallback cannot find executable Python at: $QWEN_PYTHON"
+    echo "   Run scripts/install.sh --dev from the wakeword repo, or set MWW_QWEN_PYTHON."
+    exit 1
+  fi
+}
+
+run_qwen_tts_generation() {
+  validate_qwen_tts
+
+  generator_cmd=(
+    "$QWEN_PYTHON"
+    "-m" "mcu_wakeword.cli"
+    "synth"
+    "--target-word" "$TARGET_WORD"
+    "--output-dir" "$SCRIPT_ROOT/generated_samples"
+    "--max-samples" "$MAX_TTS_SAMPLES"
+    "--batch-size" "$BATCH_SIZE"
+    "--model-id" "$QWEN_TTS_MODEL_ID"
+    "--language" "Korean"
+    "--sample-rate" "16000"
+    "--skip-qc"
+    "--clean-output"
+    "--no-update-latest"
+    "--no-generate-adversarial"
+  )
+
+  print_command "${generator_cmd[@]}"
+
+  (
+    cd "$QWEN_PROJECT_ROOT"
+    export PYTHONPATH="$QWEN_PROJECT_ROOT/src:${PYTHONPATH:-}"
+    "${generator_cmd[@]}"
+  )
+
+  rm -rf "generated_samples/_raw_qwen"
 }
 
 compute_personal_cache_key() {
@@ -337,6 +492,9 @@ compute_feature_cache_key() {
     printf 'sample_key=%s\n' "$sample_key"
     printf 'personal_key=%s\n' "$personal_key"
     printf 'reviewed_negative_key=%s\n' "$reviewed_negative_key"
+    printf 'personal_train_all_raw=%s\n' "${MWW_PERSONAL_TRAIN_ALL_RAW:-1}"
+    printf 'reviewed_negative_train_all_raw=%s\n' "${MWW_REVIEWED_NEGATIVE_TRAIN_ALL_RAW:-1}"
+    printf 'reviewed_negative_slide_frames=%s\n' "${MWW_REVIEWED_NEGATIVE_SLIDE_FRAMES:-131}"
     stat -f 'feature_script=%N:%m:%z' "scripts_macos/make_features.py"
     for dataset_dir in mit_rirs audioset_16k fma_16k wham_16k chime_16k; do
       printf '%s=%s\n' "$dataset_dir" "$(count_matching_files "$dataset_dir" '*.wav')"
@@ -370,40 +528,41 @@ if [[ "${count_existing:-0}" -eq "$MAX_TTS_SAMPLES" && -n "$cached_sample_key" &
 else
   if [[ "${count_existing:-0}" -gt 0 || -n "$cached_sample_key" || -n "$cached_sample_stamp" ]]; then
     echo "♻️ Generated sample cache changed or is incomplete; rebuilding generated samples."
-    rm -rf generated_samples
-    mkdir -p generated_samples
+    reset_dir_contents generated_samples
   fi
 fi
 
 if [[ "$sample_cache_hit" != "true" ]]; then
-  echo "🎤 Generating ${MAX_TTS_SAMPLES} samples for '${TARGET_WORD}' (batch ${BATCH_SIZE})…"
-  LENGTH_SCALES=(0.85 0.95 1.0 1.05 1.15)
-  generator_cmd=(
-    "$PY"
-    "scripts_macos/run_generator_with_progress.py"
-    "--generator" "piper-sample-generator/generate_samples.py"
-    "--output-dir" "generated_samples"
-    "--max-samples" "$MAX_TTS_SAMPLES"
-    "--"
-    "$TARGET_WORD"
-    "--max-samples" "$MAX_TTS_SAMPLES"
-    "--batch-size" "$BATCH_SIZE"
-    "--output-dir" "generated_samples"
-    "--length-scales"
-  )
+  echo "🎤 Generating ${MAX_TTS_SAMPLES} samples for '${TARGET_WORD}' with ${TTS_BACKEND} (batch ${BATCH_SIZE})…"
+  if [[ "$USE_QWEN_TTS" == "true" ]]; then
+    run_qwen_tts_generation
+  else
+    LENGTH_SCALES=(0.85 0.95 1.0 1.05 1.15)
+    generator_cmd=(
+      "$PY"
+      "scripts_macos/run_generator_with_progress.py"
+      "--generator" "piper-sample-generator/generate_samples.py"
+      "--output-dir" "generated_samples"
+      "--max-samples" "$MAX_TTS_SAMPLES"
+      "--"
+      "$TARGET_WORD"
+      "--max-samples" "$MAX_TTS_SAMPLES"
+      "--batch-size" "$BATCH_SIZE"
+      "--output-dir" "generated_samples"
+      "--length-scales"
+    )
 
-  for scale in "${LENGTH_SCALES[@]}"; do
-    generator_cmd+=("$scale")
-  done
+    for scale in "${LENGTH_SCALES[@]}"; do
+      generator_cmd+=("$scale")
+    done
 
-  for model_path in "${PIPER_MODELS[@]}"; do
-    generator_cmd+=("--model" "$model_path")
-  done
+    for model_path in "${PIPER_MODELS[@]}"; do
+      generator_cmd+=("--model" "$model_path")
+    done
 
-  printf 'CMD:'
-  printf ' %q' "${generator_cmd[@]}"
-  printf '\n'
-  "${generator_cmd[@]}"
+    print_command "${generator_cmd[@]}"
+    "${generator_cmd[@]}"
+  fi
   generated_files=$(count_matching_files "generated_samples" "*.wav")
   if [[ "${generated_files:-0}" -ne "$MAX_TTS_SAMPLES" ]]; then
     echo "❌ Expected ${MAX_TTS_SAMPLES} generated samples, but found ${generated_files}."
@@ -443,7 +602,7 @@ if features_dir_ready "generated_augmented_features" && [[ -n "$cached_feature_k
     personal_feature_cache_ok=true
     if [[ -d "personal_augmented_features" ]]; then
       echo "♻️ Removing stale personal feature cache (no personal samples present)."
-      rm -rf personal_augmented_features
+      reset_dir_contents personal_augmented_features
     fi
   elif features_dir_ready "personal_augmented_features" && [[ -n "$cached_personal_feature_key" && "$cached_personal_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
     personal_feature_cache_ok=true
@@ -454,7 +613,7 @@ if features_dir_ready "generated_augmented_features" && [[ -n "$cached_feature_k
     reviewed_negative_feature_cache_ok=true
     if [[ -d "reviewed_negative_features" ]]; then
       echo "♻️ Removing stale reviewed negative feature cache (no reviewed negative samples present)."
-      rm -rf reviewed_negative_features
+      reset_dir_contents reviewed_negative_features
     fi
   elif features_dir_ready "reviewed_negative_features" && [[ -n "$cached_reviewed_negative_feature_key" && "$cached_reviewed_negative_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
     reviewed_negative_feature_cache_ok=true
@@ -470,7 +629,9 @@ if [[ "$feature_cache_hit" == "true" ]]; then
 else
   if [[ -d "generated_augmented_features" || -d "personal_augmented_features" || -d "reviewed_negative_features" ]]; then
     echo "♻️ Feature cache changed; rebuilding augmented features."
-    rm -rf generated_augmented_features personal_augmented_features reviewed_negative_features
+    reset_dir_contents generated_augmented_features
+    reset_dir_contents personal_augmented_features
+    reset_dir_contents reviewed_negative_features
   fi
   echo "🧪 Building augmented feature sets…"
   "$PY" scripts_macos/make_features.py
@@ -514,6 +675,7 @@ echo "🏋️ Starting model training and TFLite export (this is the longest sta
 
 # ── (I) calibrate detector metadata ────────────────────────────────────────────
 CALIBRATION_JSON="trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
+RAW_POSITIVE_MIN_DETECTION_RATE="${MWW_RAW_POSITIVE_MIN_DETECTION_RATE:-0.80}"
 echo "🎯 Calibrating detector settings for on-device use…"
 if "$PY" scripts_macos/calibrate_detector.py \
   --training-config "trained_models/wakeword/training_config.yaml" \
@@ -524,6 +686,18 @@ else
   echo "⚠️ Detector calibration failed; packaging with default detector settings."
   rm -f "$CALIBRATION_JSON"
 fi
+if dir_has_matching_files "personal_samples" "*.wav" && dir_has_matching_files "negative_samples" "*.wav"; then
+  echo "🎚️ Tuning detector settings against raw personal/negative samples…"
+  "$PY" scripts_macos/tune_raw_detector_settings.py \
+    --training-config "trained_models/wakeword/training_config.yaml" \
+    --model "trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite" \
+    --calibration "$CALIBRATION_JSON" \
+    --positive-dir personal_samples \
+    --negative-dir negative_samples \
+    --min-positive-detection-rate "$RAW_POSITIVE_MIN_DETECTION_RATE"
+else
+  echo "ℹ️ Raw detector tuning skipped; personal and negative samples are both required."
+fi
 
 # ── (J) package artifacts (name by wake word) ─────────────────────────────────
 echo "📦 Packaging final model artifacts…"
@@ -533,10 +707,12 @@ from pathlib import Path
 
 target = os.environ.get("TARGET_WORD", "wakeword")
 language = os.environ.get("MWW_LANGUAGE", "en")
+artifact_safe = os.environ.get("MWW_ARTIFACT_SAFE_WORD", "")
 calibration_path = Path(
     "trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
 )
-safe = re.sub(r'[^a-z0-9_]+', '', re.sub(r'\s+', '_', target.lower()))
+safe_source = artifact_safe or target
+safe = re.sub(r'[^a-z0-9_]+', '', re.sub(r'\s+', '_', safe_source.lower()))
 if not safe:
     safe = "wakeword"
 
@@ -580,8 +756,32 @@ meta = {
 }
 json_path = catalog_dir / f"{safe}.json"
 json_path.write_text(json.dumps(meta, indent=2))
+latest_path = catalog_dir / ".latest_artifact.json"
+latest_path.write_text(json.dumps({
+    "model": str(dst),
+    "manifest": str(json_path),
+}, indent=2))
 
 print(f"📦 Wrote {dst} and {json_path} (wake word: {target!r})")
 PY
+
+LATEST_ARTIFACT_MANIFEST="$("$PY" - <<'PY'
+import json
+from pathlib import Path
+
+latest = Path("trained_wake_words/.latest_artifact.json")
+if latest.exists():
+    print(json.loads(latest.read_text(encoding="utf-8"))["manifest"])
+PY
+)"
+if [[ -n "$LATEST_ARTIFACT_MANIFEST" && -f "$LATEST_ARTIFACT_MANIFEST" ]]; then
+  "$PY" scripts_macos/check_raw_samples.py \
+    --manifest "$LATEST_ARTIFACT_MANIFEST" \
+    --positive-dir personal_samples \
+    --negative-dir negative_samples \
+    --min-positive-detection-rate "$RAW_POSITIVE_MIN_DETECTION_RATE"
+else
+  echo "⚠️ Could not locate latest packaged manifest; skipping raw sample check."
+fi
 
 echo "🎉 Done."

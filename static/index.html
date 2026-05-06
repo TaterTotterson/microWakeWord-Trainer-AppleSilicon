@@ -1235,7 +1235,7 @@
             <span class="studioStepBadge">2</span>
             <div>
               <h3>Manual Sample Import</h3>
-              <p>Optional backup path for seeding positives before your device has captured enough real wake audio.</p>
+              <p>Optional backup path for seeding the selected personal or negative sample bucket.</p>
             </div>
           </div>
         </div>
@@ -1243,7 +1243,7 @@
         <div class="dropzone">
           <div>
             <strong>Select one or many files</strong>
-            <p class="muted" style="margin-top:6px;">WAV, MP3, M4A, FLAC, OGG, AAC, OPUS, and WEBM are all fine when ffmpeg is available. Files are converted into <code>personal_samples/</code>.</p>
+            <p id="sampleImportHelp" class="muted" style="margin-top:6px;">WAV, MP3, M4A, FLAC, OGG, AAC, OPUS, and WEBM are all fine when ffmpeg is available. Files are converted into <code>personal_samples/</code>.</p>
           </div>
           <input id="sampleFiles" type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.aac,.webm,.opus" multiple />
           <span id="selectedPill" class="pill">No files selected</span>
@@ -1261,7 +1261,7 @@
           <div class="progressShell">
             <div id="progressFill" class="progressFill"></div>
           </div>
-          <div id="progressDetail" class="muted">When you upload, each file is checked and converted only if needed before it is written into <code>personal_samples/</code>.</div>
+          <div id="progressDetail" class="muted">When you upload, each file is checked and converted only if needed before it is written into the selected sample bucket.</div>
         </div>
       </section>
     </div>
@@ -1581,8 +1581,11 @@
     updateTrainingSampleCounts();
 
     const activeBucket = uiState.samples.activeBucket === "negative" ? "negative" : "personal";
+    const targetDir = activeBucket === "negative" ? "negative_samples" : "personal_samples";
     $("sampleTabPersonal").classList.toggle("active", activeBucket === "personal");
     $("sampleTabNegative").classList.toggle("active", activeBucket === "negative");
+    $("sampleImportHelp").innerHTML =
+      `WAV, MP3, M4A, FLAC, OGG, AAC, OPUS, and WEBM are all fine when ffmpeg is available. Files are converted into <code>${targetDir}/</code>.`;
 
     const items = activeBucket === "negative" ? uiState.samples.negative : uiState.samples.personal;
     const label = activeBucket === "negative" ? "negative" : "personal";
@@ -2200,7 +2203,7 @@
     const firmwareTemplate = ($("firmwareTemplate").value || "").trim();
 
     $("ttsBtn").disabled = !hasPhrase || uiState.uploadBusy;
-    $("uploadBtn").disabled = !hasSession || !hasSelected || uiState.uploadBusy;
+    $("uploadBtn").disabled = !hasSelected || uiState.uploadBusy;
     $("clearBtn").disabled = sampleCount === 0 || uiState.uploadBusy || uiState.reviewBusy;
     $("openConsoleBtn").disabled = !hasConsole;
     $("trainBtn").disabled = !hasSession || uiState.uploadBusy || Boolean(training.running);
@@ -2250,16 +2253,19 @@
     return session;
   }
 
-  function uploadOneFile(file, index, total) {
+  function uploadOneFile(file, index, total, bucket) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const formData = new FormData();
       const base = index / total;
       const span = 1 / total;
+      const targetBucket = bucket === "negative" ? "negative" : "personal";
+      const targetDir = targetBucket === "negative" ? "negative_samples" : "personal_samples";
+      const endpoint = targetBucket === "negative" ? "/api/upload_negative_sample" : "/api/upload_personal_sample";
 
       formData.append("file", file, file.name);
 
-      xhr.open("POST", "/api/upload_personal_sample");
+      xhr.open("POST", endpoint);
       xhr.responseType = "json";
 
       xhr.upload.onprogress = (event) => {
@@ -2299,7 +2305,7 @@
           updateProgress(
             base + span,
             data.converted ? `Converted ${file.name}` : `Validated ${file.name}`,
-            `${data.saved_as} saved into personal_samples.`
+            `${data.saved_as} saved into ${targetDir}.`
           );
           resolve(data);
           return;
@@ -2315,10 +2321,6 @@
   }
 
   async function uploadSelectedFiles() {
-    if (!uiState.session?.safe_word) {
-      alert("Start a session first.");
-      return;
-    }
     if (!uiState.selectedFiles.length) {
       alert("Choose one or more audio files first.");
       return;
@@ -2326,7 +2328,10 @@
 
     uiState.uploadBusy = true;
     syncButtons();
-    setPill($("status"), "Uploading samples...", "warn");
+    const bucket = uiState.samples.activeBucket === "negative" ? "negative" : "personal";
+    const targetDir = bucket === "negative" ? "negative_samples" : "personal_samples";
+    const bucketLabel = bucket === "negative" ? "negative" : "personal";
+    setPill($("status"), `Uploading ${bucketLabel} samples...`, "warn");
 
     try {
       const files = [...uiState.selectedFiles];
@@ -2334,7 +2339,7 @@
       let validatedCount = 0;
       for (let i = 0; i < files.length; i += 1) {
         const file = files[i];
-        const result = await uploadOneFile(file, i, files.length);
+        const result = await uploadOneFile(file, i, files.length, bucket);
         if (result.converted) convertedCount += 1;
         else validatedCount += 1;
       }
@@ -2343,14 +2348,16 @@
       $("sampleFiles").value = "";
       renderSelectedFiles();
 
-      const [session] = await Promise.all([refreshSession(), refreshSamples()]);
-      const uploaded = Number(session?.takes_received || 0);
-      setPill($("status"), `Uploaded ${uploaded} sample${uploaded === 1 ? "" : "s"}`, "ok");
+      const [session, samples] = await Promise.all([refreshSession(), refreshSamples()]);
+      const uploaded = bucket === "negative"
+        ? Number(samples?.negative_count || 0)
+        : Number(session?.takes_received || samples?.personal_count || 0);
+      setPill($("status"), `Uploaded ${uploaded} ${bucketLabel} sample${uploaded === 1 ? "" : "s"}`, "ok");
       const parts = [];
       if (convertedCount) parts.push(`${convertedCount} converted successfully`);
       if (validatedCount) parts.push(`${validatedCount} already in the correct format`);
       const summary = parts.length ? parts.join(", ") : "Files processed successfully";
-      updateProgress(1, "Upload and conversion complete", `${summary}. Saved to personal_samples.`);
+      updateProgress(1, "Upload and conversion complete", `${summary}. Saved to ${targetDir}.`);
     } catch (error) {
       setPill($("status"), "Upload failed", "err");
       updateProgress(0, "Upload failed", error.message);
