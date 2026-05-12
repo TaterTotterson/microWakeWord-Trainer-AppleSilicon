@@ -38,7 +38,9 @@ install_ui_deps() {
     "fastapi==${FASTAPI_VERSION}" \
     "uvicorn[standard]==${UVICORN_VERSION}" \
     "python-multipart==${PY_MULTIPART_VERSION}" \
-    "esphome==${ESPHOME_VERSION}"
+    "esphome==${ESPHOME_VERSION}" \
+    "silero-vad>=5.0.0" \
+    "numpy>=1.24.0"
 }
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
