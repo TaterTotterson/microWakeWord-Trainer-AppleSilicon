@@ -5,6 +5,7 @@
 # - FMA      -> resample to 16 kHz mono, skip bad files
 
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -226,6 +227,9 @@ audioset_out = Path("audioset_16k"); audioset_out.mkdir(exist_ok=True)
 # ✅ skip if already prepared
 if any(audioset_out.rglob("*.wav")):
     print("✅ audioset_16k exists; skipping.")
+    if audioset_dir.exists():
+        print(f"🧹 Removing raw AudioSet cache: {audioset_dir}")
+        shutil.rmtree(audioset_dir, ignore_errors=True)
 else:
     # Known commits around the conversion period; we probe to find one still serving FLAC tars
     REV_CANDIDATES = [
@@ -297,6 +301,10 @@ else:
             (audioset_out / "audioset_corrupted_files.log").write_text("\n".join(audioset_bad))
         print(f"✅ AudioSet complete ({ok} ok, {len(audioset_bad)} failed)")
 
+    if any(audioset_out.rglob("*.wav")):
+        print(f"🧹 Removing raw AudioSet cache: {audioset_dir}")
+        shutil.rmtree(audioset_dir, ignore_errors=True)
+
 # ============================================================
 # FMA xsmall (resample to 16 kHz mono, skip bad files)
 # ============================================================
@@ -307,6 +315,9 @@ fma_out = Path("fma_16k"); fma_out.mkdir(exist_ok=True)
 # ✅ skip if already prepared
 if any(fma_out.rglob("*.wav")):
     print("✅ fma_16k exists; skipping.")
+    if fma_zip_dir.exists():
+        print(f"🧹 Removing raw FMA cache: {fma_zip_dir}")
+        shutil.rmtree(fma_zip_dir, ignore_errors=True)
 else:
     zipname = "fma_small.zip"
     zipurls = [
@@ -339,6 +350,9 @@ else:
     if fma_bad:
         Path("fma_corrupted_files.log").write_text("\n".join(fma_bad))
     print(f"✅ FMA complete ({ok} ok, {len(fma_bad)} failed)")
+    if any(fma_out.rglob("*.wav")):
+        print(f"🧹 Removing raw FMA cache: {fma_zip_dir}")
+        shutil.rmtree(fma_zip_dir, ignore_errors=True)
 
 # ============================================================
 # WHAM_noise (resample to 16 kHz mono, skip bad files)
@@ -349,6 +363,9 @@ wham_out = Path("wham_16k"); wham_out.mkdir(exist_ok=True)
 
 if any(wham_out.rglob("*.wav")):
     print("✅ wham_16k exists; skipping.")
+    if wham_zip_dir.exists():
+        print(f"🧹 Removing raw WHAM cache: {wham_zip_dir}")
+        shutil.rmtree(wham_zip_dir, ignore_errors=True)
 else:
     zipname = "wham_noise.zip"
     zipurl = "https://my-bucket-a8b4b49c25c811ee9a7e8bba05fa24c7.s3.amazonaws.com/wham_noise.zip"
@@ -382,6 +399,9 @@ else:
     if corrupt:
         Path("wham_corrupted_files.log").write_text("\n".join(corrupt))
     print(f"✅ WHAM complete (handled {len(corrupt)} corrupt files)")
+    if any(wham_out.rglob("*.wav")):
+        print(f"🧹 Removing raw WHAM cache: {wham_zip_dir}")
+        shutil.rmtree(wham_zip_dir, ignore_errors=True)
 
 # ============================================================
 # CHiME-Home (resample to 16 kHz mono, skip bad files)
@@ -392,6 +412,9 @@ chime_out = Path("chime_16k"); chime_out.mkdir(exist_ok=True)
 
 if any(chime_out.rglob("*.wav")):
     print("✅ chime_16k exists; skipping.")
+    if chime_tar_dir.exists():
+        print(f"🧹 Removing raw CHiME cache: {chime_tar_dir}")
+        shutil.rmtree(chime_tar_dir, ignore_errors=True)
 else:
     tar_filename = "chime_home.tar.gz"
     tar_url = "https://archive.org/download/chime-home/chime_home.tar.gz"
@@ -432,5 +455,8 @@ else:
     if corrupt:
         Path("chime_corrupted_files.log").write_text("\n".join(corrupt))
     print(f"✅ CHiME complete (handled {len(corrupt)} corrupt files)")
+    if any(chime_out.rglob("*.wav")):
+        print(f"🧹 Removing raw CHiME cache: {chime_tar_dir}")
+        shutil.rmtree(chime_tar_dir, ignore_errors=True)
 
 print("\n✅ Dataset prep complete!")

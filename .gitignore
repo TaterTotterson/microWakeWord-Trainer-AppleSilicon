@@ -10,9 +10,31 @@ trained_wake_words/
 trained_models/
 output/
 recorder_training.log
+training_parameters.yaml
+
+# Raw datasets (deleted after resampling to 16 kHz)
+audioset/
+fma/
+wham/
+chime/
+MIT_RIR_Audio.zip
+*_corrupted_files.log
+
+# Resampled datasets and training negatives
+audioset_16k/
+fma_16k/
+wham_16k/
+chime_16k/
+mit_rirs/
+negative_datasets/
+
+# Auto-cloned dependency repos
+piper-sample-generator/
+micro-wake-word/
 
 # Local caches and virtual environments
 .cache/
+.venv/
 .recorder-venv/
 
 # macOS Finder metadata
