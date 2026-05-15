@@ -34,9 +34,9 @@ STATIC_DIR = ROOT_DIR / "static"
 PERSONAL_DIR = ROOT_DIR / "personal_samples"
 CAPTURED_DIR = ROOT_DIR / "captured_audio"
 NEGATIVE_DIR = ROOT_DIR / "negative_samples"
-TRAINED_WAKE_WORDS_DIR = ROOT_DIR / "trained_wake_words"
+TRAINED_WAKE_WORDS_DIR = ROOT_DIR / "generated" / "trained_wake_words"
 TRAIN_SCRIPT = os.environ.get("TRAIN_SCRIPT", str(ROOT_DIR / "train_microwakeword_macos.sh"))
-PIPER_ROOT = ROOT_DIR / "piper-sample-generator"
+PIPER_ROOT = ROOT_DIR / "deps" / "piper-sample-generator"
 PIPER_VOICES_DIR = PIPER_ROOT / "voices"
 PIPER_VOICES_INDEX_URL = os.environ.get(
     "PIPER_VOICES_INDEX_URL",

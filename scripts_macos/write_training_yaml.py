@@ -4,13 +4,13 @@ from pathlib import Path
 
 config = {
   "window_step_ms": 10,
-  "train_dir": "trained_models/wakeword",
+  "train_dir": "generated/trained_models/wakeword",
   "features": [
-    {"features_dir": "generated_augmented_features", "sampling_weight": 2.0, "penalty_weight": 1.0, "truth": True,  "truncation_strategy": "truncate_start", "type": "mmap"},
-    {"features_dir": "negative_datasets/speech",     "sampling_weight": 12.0,"penalty_weight": 1.0, "truth": False, "truncation_strategy": "random",         "type": "mmap"},
-    {"features_dir": "negative_datasets/dinner_party","sampling_weight": 12.0,"penalty_weight": 1.0,"truth": False,"truncation_strategy": "random",         "type": "mmap"},
-    {"features_dir": "negative_datasets/no_speech",  "sampling_weight": 5.0, "penalty_weight": 1.0, "truth": False, "truncation_strategy": "random",         "type": "mmap"},
-    {"features_dir": "negative_datasets/dinner_party_eval","sampling_weight": 0.0,"penalty_weight":1.0,"truth": False,"truncation_strategy":"split","type":"mmap"},
+    {"features_dir": "generated/generated_augmented_features", "sampling_weight": 2.0, "penalty_weight": 1.0, "truth": True,  "truncation_strategy": "truncate_start", "type": "mmap"},
+    {"features_dir": "datasets/negative_datasets/speech",     "sampling_weight": 12.0,"penalty_weight": 1.0, "truth": False, "truncation_strategy": "random",         "type": "mmap"},
+    {"features_dir": "datasets/negative_datasets/dinner_party","sampling_weight": 12.0,"penalty_weight": 1.0,"truth": False,"truncation_strategy": "random",         "type": "mmap"},
+    {"features_dir": "datasets/negative_datasets/no_speech",  "sampling_weight": 5.0, "penalty_weight": 1.0, "truth": False, "truncation_strategy": "random",         "type": "mmap"},
+    {"features_dir": "datasets/negative_datasets/dinner_party_eval","sampling_weight": 0.0,"penalty_weight":1.0,"truth": False,"truncation_strategy":"split","type":"mmap"},
   ],
   "training_steps": [40000],
   "positive_class_weight": [1],
@@ -29,14 +29,14 @@ config = {
 }
 
 # Add personal features if they exist
-if os.path.exists("personal_augmented_features/training"):
-    config["features"].insert(1, {"features_dir": "personal_augmented_features", "sampling_weight": 3.0, "penalty_weight": 1.0, "truth": True, "truncation_strategy": "truncate_start", "type": "mmap"})
+if os.path.exists("generated/personal_augmented_features/training"):
+    config["features"].insert(1, {"features_dir": "generated/personal_augmented_features", "sampling_weight": 3.0, "penalty_weight": 1.0, "truth": True, "truncation_strategy": "truncate_start", "type": "mmap"})
     print("✅ Added personal features with higher weight (3.0)")
 
 # Add reviewed false-positive features if they exist
-if os.path.exists("reviewed_negative_features/training"):
-    insert_at = 2 if os.path.exists("personal_augmented_features/training") else 1
-    config["features"].insert(insert_at, {"features_dir": "reviewed_negative_features", "sampling_weight": 8.0, "penalty_weight": 1.25, "truth": False, "truncation_strategy": "random", "type": "mmap"})
+if os.path.exists("generated/reviewed_negative_features/training"):
+    insert_at = 2 if os.path.exists("generated/personal_augmented_features/training") else 1
+    config["features"].insert(insert_at, {"features_dir": "generated/reviewed_negative_features", "sampling_weight": 8.0, "penalty_weight": 1.25, "truth": False, "truncation_strategy": "random", "type": "mmap"})
     print("✅ Added reviewed negative features with stronger negative weighting")
 
 with open("training_parameters.yaml", "w") as f:

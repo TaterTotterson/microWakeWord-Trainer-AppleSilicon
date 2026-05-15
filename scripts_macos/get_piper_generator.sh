@@ -18,19 +18,20 @@ download_file() {
 }
 
 # venv assumed active outside
-if [[ ! -d "piper-sample-generator" ]]; then
+mkdir -p deps
+if [[ ! -d "deps/piper-sample-generator" ]]; then
   echo "⬇️ Cloning TaterTotterson/piper-sample-generator…"
-  git clone "$PIPER_REPO_URL" >/dev/null
+  git clone "$PIPER_REPO_URL" deps/piper-sample-generator >/dev/null
 else
-  current_origin="$(git -C piper-sample-generator remote get-url origin 2>/dev/null || true)"
+  current_origin="$(git -C deps/piper-sample-generator remote get-url origin 2>/dev/null || true)"
   if [[ "$current_origin" != "$PIPER_REPO_URL" ]]; then
     echo "🔁 Updating piper-sample-generator origin to TaterTotterson fork…"
-    git -C piper-sample-generator remote set-url origin "$PIPER_REPO_URL"
+    git -C deps/piper-sample-generator remote set-url origin "$PIPER_REPO_URL"
   fi
 fi
 
 echo "📦 Installing piper-sample-generator in editable mode…"
-pip install -q -e ./piper-sample-generator
+pip install -q -e ./deps/piper-sample-generator
 
 # Torch/torchaudio for Mac (MPS works out of the box on Apple Silicon wheels)
 pip install -q torch torchaudio
@@ -38,8 +39,8 @@ pip install -q torch torchaudio
 # (Kept for phonemization parity with your notebook)
 pip install -q piper-phonemize-cross==1.2.1
 
-MODELS_DIR="piper-sample-generator/models"
-VOICES_DIR="piper-sample-generator/voices"
+MODELS_DIR="deps/piper-sample-generator/models"
+VOICES_DIR="deps/piper-sample-generator/voices"
 mkdir -p "$MODELS_DIR" "$VOICES_DIR"
 
 # English multi-speaker model (used by --language=en)

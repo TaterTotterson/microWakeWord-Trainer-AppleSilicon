@@ -190,16 +190,16 @@ PY
                            "git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f" || true
 "$PY" -m pip install -q datasets librosa scipy numpy tqdm pyyaml requests ipython jupyter silero-vad || true
 
-# microWakeWord source (editable)
-if [[ ! -d "micro-wake-word" ]]; then
+# microWakeWord (editable install from local clone in deps/)
+mkdir -p deps
+if [[ ! -d "deps/micro-wake-word" ]]; then
   echo "⬇️ Cloning microWakeWord…"
-  git clone https://github.com/TaterTotterson/micro-wake-word.git >/dev/null
+  git clone https://github.com/TaterTotterson/micro-wake-word.git deps/micro-wake-word >/dev/null
 else
   echo "🔁 Updating microWakeWord…"
-  (cd micro-wake-word && git pull --ff-only origin main || true)
+  (git -C deps/micro-wake-word pull --ff-only origin main || true)
 fi
-
-"$PY" -m pip install -q -e ./micro-wake-word || true
+"$PY" -m pip install -q -e ./deps/micro-wake-word || true
 
 # piper-sample-generator (TaterTotterson fork)
 bash scripts_macos/get_piper_generator.sh
@@ -217,7 +217,7 @@ PY
 export TARGET_WORD MAX_TTS_SAMPLES BATCH_SIZE LANGUAGE MWW_LANGUAGE
 
 # ── Ensure at least one model is provided (language-aware default) ────────────
-DEFAULT_MODEL_PT="piper-sample-generator/models/en_US-libritts_r-medium.pt"
+DEFAULT_MODEL_PT="deps/piper-sample-generator/models/en_US-libritts_r-medium.pt"
 if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
   if [[ "$LANGUAGE" == "en" ]]; then
     echo "ℹ️  No --piper-model provided; using default English voice:"
@@ -230,7 +230,7 @@ if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
     PIPER_MODELS=("$DEFAULT_MODEL_PT")
   else
     shopt -s nullglob
-    language_voice_models=(piper-sample-generator/voices/"${LANGUAGE}"_*.onnx)
+    language_voice_models=(deps/piper-sample-generator/voices/"${LANGUAGE}"_*.onnx)
     shopt -u nullglob
     if [[ ${#language_voice_models[@]} -eq 0 ]]; then
       echo "❌ No Piper ONNX voice models found for language '${LANGUAGE}'."
@@ -338,30 +338,30 @@ compute_feature_cache_key() {
     printf 'personal_key=%s\n' "$personal_key"
     printf 'reviewed_negative_key=%s\n' "$reviewed_negative_key"
     stat -f 'feature_script=%N:%m:%z' "scripts_macos/make_features.py"
-    for dataset_dir in mit_rirs audioset_16k fma_16k wham_16k chime_16k; do
+    for dataset_dir in datasets/mit_rirs datasets/audioset_16k datasets/fma_16k datasets/wham_16k datasets/chime_16k; do
       printf '%s=%s\n' "$dataset_dir" "$(count_matching_files "$dataset_dir" '*.wav')"
     done
   } | shasum -a 256 | awk '{print $1}'
 }
 
-SAMPLE_CACHE_KEY_FILE="generated_samples/.cache_key"
-SAMPLE_CACHE_STAMP_FILE="generated_samples/.cache_stamp"
-FEATURE_CACHE_KEY_FILE="generated_augmented_features/.cache_key"
-PERSONAL_FEATURE_CACHE_KEY_FILE="personal_augmented_features/.cache_key"
-REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE="reviewed_negative_features/.cache_key"
+SAMPLE_CACHE_KEY_FILE="generated/generated_samples/.cache_key"
+SAMPLE_CACHE_STAMP_FILE="generated/generated_samples/.cache_stamp"
+FEATURE_CACHE_KEY_FILE="generated/generated_augmented_features/.cache_key"
+PERSONAL_FEATURE_CACHE_KEY_FILE="generated/personal_augmented_features/.cache_key"
+REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE="generated/reviewed_negative_features/.cache_key"
 SAMPLE_CACHE_KEY="$(compute_sample_cache_key)"
 
 # ── (A) clean previous run artifacts that must always be rebuilt ─────────────
 echo "🧹 Cleaning previous training outputs…"
 rm -f training_parameters.yaml
-rm -rf trained_models
+rm -rf generated/trained_models
 echo "✅ Training outputs cleared."
 
-mkdir -p generated_samples
+mkdir -p generated/generated_samples
 
 # ── (B) bulk TTS (skip if enough files present) ──────────────────────────────
 sample_cache_hit=false
-count_existing=$(count_matching_files "generated_samples" "*.wav")
+count_existing=$(count_matching_files "generated/generated_samples" "*.wav")
 cached_sample_key="$(read_cache_key "$SAMPLE_CACHE_KEY_FILE")"
 cached_sample_stamp="$(read_cache_key "$SAMPLE_CACHE_STAMP_FILE")"
 if [[ "${count_existing:-0}" -eq "$MAX_TTS_SAMPLES" && -n "$cached_sample_key" && -n "$cached_sample_stamp" && "$cached_sample_key" == "$SAMPLE_CACHE_KEY" ]]; then
@@ -370,8 +370,8 @@ if [[ "${count_existing:-0}" -eq "$MAX_TTS_SAMPLES" && -n "$cached_sample_key" &
 else
   if [[ "${count_existing:-0}" -gt 0 || -n "$cached_sample_key" || -n "$cached_sample_stamp" ]]; then
     echo "♻️ Generated sample cache changed or is incomplete; rebuilding generated samples."
-    rm -rf generated_samples
-    mkdir -p generated_samples
+    rm -rf generated/generated_samples
+    mkdir -p generated/generated_samples
   fi
 fi
 
@@ -381,14 +381,14 @@ if [[ "$sample_cache_hit" != "true" ]]; then
   generator_cmd=(
     "$PY"
     "scripts_macos/run_generator_with_progress.py"
-    "--generator" "piper-sample-generator/generate_samples.py"
-    "--output-dir" "generated_samples"
+    "--generator" "deps/piper-sample-generator/generate_samples.py"
+    "--output-dir" "generated/generated_samples"
     "--max-samples" "$MAX_TTS_SAMPLES"
     "--"
     "$TARGET_WORD"
     "--max-samples" "$MAX_TTS_SAMPLES"
     "--batch-size" "$BATCH_SIZE"
-    "--output-dir" "generated_samples"
+    "--output-dir" "generated/generated_samples"
     "--length-scales"
   )
 
@@ -404,7 +404,7 @@ if [[ "$sample_cache_hit" != "true" ]]; then
   printf ' %q' "${generator_cmd[@]}"
   printf '\n'
   "${generator_cmd[@]}"
-  generated_files=$(count_matching_files "generated_samples" "*.wav")
+  generated_files=$(count_matching_files "generated/generated_samples" "*.wav")
   if [[ "${generated_files:-0}" -ne "$MAX_TTS_SAMPLES" ]]; then
     echo "❌ Expected ${MAX_TTS_SAMPLES} generated samples, but found ${generated_files}."
     exit 1
@@ -437,26 +437,26 @@ cached_feature_key="$(read_cache_key "$FEATURE_CACHE_KEY_FILE")"
 cached_personal_feature_key="$(read_cache_key "$PERSONAL_FEATURE_CACHE_KEY_FILE")"
 cached_reviewed_negative_feature_key="$(read_cache_key "$REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE")"
 
-if features_dir_ready "generated_augmented_features" && [[ -n "$cached_feature_key" && "$cached_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
+if features_dir_ready "generated/generated_augmented_features" && [[ -n "$cached_feature_key" && "$cached_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
   personal_feature_cache_ok=false
   if [[ "$PERSONAL_CACHE_KEY" == "none" ]]; then
     personal_feature_cache_ok=true
-    if [[ -d "personal_augmented_features" ]]; then
+    if [[ -d "generated/personal_augmented_features" ]]; then
       echo "♻️ Removing stale personal feature cache (no personal samples present)."
-      rm -rf personal_augmented_features
+      rm -rf generated/personal_augmented_features
     fi
-  elif features_dir_ready "personal_augmented_features" && [[ -n "$cached_personal_feature_key" && "$cached_personal_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
+  elif features_dir_ready "generated/personal_augmented_features" && [[ -n "$cached_personal_feature_key" && "$cached_personal_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
     personal_feature_cache_ok=true
   fi
 
   reviewed_negative_feature_cache_ok=false
   if [[ "$REVIEWED_NEGATIVE_CACHE_KEY" == "none" ]]; then
     reviewed_negative_feature_cache_ok=true
-    if [[ -d "reviewed_negative_features" ]]; then
+    if [[ -d "generated/reviewed_negative_features" ]]; then
       echo "♻️ Removing stale reviewed negative feature cache (no reviewed negative samples present)."
-      rm -rf reviewed_negative_features
+      rm -rf generated/reviewed_negative_features
     fi
-  elif features_dir_ready "reviewed_negative_features" && [[ -n "$cached_reviewed_negative_feature_key" && "$cached_reviewed_negative_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
+  elif features_dir_ready "generated/reviewed_negative_features" && [[ -n "$cached_reviewed_negative_feature_key" && "$cached_reviewed_negative_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
     reviewed_negative_feature_cache_ok=true
   fi
 
@@ -468,17 +468,17 @@ fi
 if [[ "$feature_cache_hit" == "true" ]]; then
   echo "✅ Reusing augmented feature caches for the current wake word, personal samples, and reviewed negatives."
 else
-  if [[ -d "generated_augmented_features" || -d "personal_augmented_features" || -d "reviewed_negative_features" ]]; then
+  if [[ -d "generated/generated_augmented_features" || -d "generated/personal_augmented_features" || -d "generated/reviewed_negative_features" ]]; then
     echo "♻️ Feature cache changed; rebuilding augmented features."
-    rm -rf generated_augmented_features personal_augmented_features reviewed_negative_features
+    rm -rf generated/generated_augmented_features generated/personal_augmented_features generated/reviewed_negative_features
   fi
   echo "🧪 Building augmented feature sets…"
   "$PY" scripts_macos/make_features.py
   write_cache_key "$FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
-  if [[ "$PERSONAL_CACHE_KEY" != "none" && -d "personal_augmented_features" ]]; then
+  if [[ "$PERSONAL_CACHE_KEY" != "none" && -d "generated/personal_augmented_features" ]]; then
     write_cache_key "$PERSONAL_FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
   fi
-  if [[ "$REVIEWED_NEGATIVE_CACHE_KEY" != "none" && -d "reviewed_negative_features" ]]; then
+  if [[ "$REVIEWED_NEGATIVE_CACHE_KEY" != "none" && -d "generated/reviewed_negative_features" ]]; then
     write_cache_key "$REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
   fi
 fi
@@ -513,11 +513,11 @@ echo "🏋️ Starting model training and TFLite export (this is the longest sta
   --stride 2
 
 # ── (I) calibrate detector metadata ────────────────────────────────────────────
-CALIBRATION_JSON="trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
+CALIBRATION_JSON="generated/trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
 echo "🎯 Calibrating detector settings for on-device use…"
 if "$PY" scripts_macos/calibrate_detector.py \
-  --training-config "trained_models/wakeword/training_config.yaml" \
-  --model "trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite" \
+  --training-config "generated/trained_models/wakeword/training_config.yaml" \
+  --model "generated/trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite" \
   --output "$CALIBRATION_JSON"; then
   echo "✅ Detector calibration complete."
 else
@@ -534,14 +534,14 @@ from pathlib import Path
 target = os.environ.get("TARGET_WORD", "wakeword")
 language = os.environ.get("MWW_LANGUAGE", "en")
 calibration_path = Path(
-    "trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
+    "generated/trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
 )
 safe = re.sub(r'[^a-z0-9_]+', '', re.sub(r'\s+', '_', target.lower()))
 if not safe:
     safe = "wakeword"
 
-src = Path("trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite")
-catalog_dir = Path(os.environ.get("TRAINED_WAKE_WORDS_DIR", "trained_wake_words"))
+src = Path("generated/trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite")
+catalog_dir = Path(os.environ.get("TRAINED_WAKE_WORDS_DIR", "generated/trained_wake_words"))
 catalog_dir.mkdir(parents=True, exist_ok=True)
 dst = catalog_dir / f"{safe}.tflite"
 if not src.exists():

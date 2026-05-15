@@ -1,13 +1,10 @@
-# Runtime audio, samples, and generated model artifacts
+# Runtime audio and personal samples (user-managed)
 personal_samples/
 captured_audio/
 negative_samples/
-generated_samples/
-generated_augmented_features/
-personal_augmented_features/
-reviewed_negative_features/
-trained_wake_words/
-trained_models/
+
+# Pipeline-generated artifacts
+generated/
 output/
 recorder_training.log
 training_parameters.yaml
@@ -21,16 +18,10 @@ MIT_RIR_Audio.zip
 *_corrupted_files.log
 
 # Resampled datasets and training negatives
-audioset_16k/
-fma_16k/
-wham_16k/
-chime_16k/
-mit_rirs/
-negative_datasets/
+datasets/
 
 # Auto-cloned dependency repos
-piper-sample-generator/
-micro-wake-word/
+deps/
 
 # Local caches and virtual environments
 .cache/

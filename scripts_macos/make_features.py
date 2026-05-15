@@ -22,22 +22,22 @@ def validate(paths):
     print(f"✅ Validated all {len(paths)} dataset directories")
 
 
-impulse_paths = ["mit_rirs"]
+impulse_paths = ["datasets/mit_rirs"]
 background_paths = [
-    "wham_16k",
-    "chime_16k",
-    "fma_16k",
-    "audioset_16k",
+    "datasets/wham_16k",
+    "datasets/chime_16k",
+    "datasets/fma_16k",
+    "datasets/audioset_16k",
 ]
 validate(impulse_paths + background_paths)
 print("⏳ Preparing clip indexes and augmentation pipeline (please wait)…")
 
-tts_wav_count = len(list(Path("./generated_samples").glob("*.wav")))
+tts_wav_count = len(list(Path("./generated/generated_samples").glob("*.wav")))
 print(f"🎤 Generated sample count: {tts_wav_count}")
 
 # Process TTS generated samples (default)
 clips_tts = Clips(
-    input_directory="./generated_samples",
+    input_directory="./generated/generated_samples",
     file_pattern="*.wav",
     max_clip_duration_s=5,
     remove_silence=True,
@@ -95,7 +95,7 @@ augmenter = Augmentation(
     max_jitter_s=0.3,
 )
 
-out_root = Path("generated_augmented_features")
+out_root = Path("generated/generated_augmented_features")
 out_root.mkdir(exist_ok=True)
 
 split_cfg = {
@@ -128,7 +128,7 @@ for split, cfg in split_cfg.items():
 
 # Process personal samples if available
 if clips_personal is not None:
-    out_root_personal = Path("personal_augmented_features")
+    out_root_personal = Path("generated/personal_augmented_features")
     out_root_personal.mkdir(exist_ok=True)
     for split, cfg in split_cfg.items():
         out_dir = out_root_personal / split
@@ -150,7 +150,7 @@ if clips_personal is not None:
 
 # Process reviewed negative samples if available
 if clips_reviewed_negative is not None:
-    out_root_negative = Path("reviewed_negative_features")
+    out_root_negative = Path("generated/reviewed_negative_features")
     out_root_negative.mkdir(exist_ok=True)
     for split, cfg in split_cfg.items():
         out_dir = out_root_negative / split

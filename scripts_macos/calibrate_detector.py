@@ -35,13 +35,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--training-config",
-        default="trained_models/wakeword/training_config.yaml",
+        default="generated/trained_models/wakeword/training_config.yaml",
         help="Path to the saved microWakeWord training_config.yaml file.",
     )
     parser.add_argument(
         "--model",
         default=(
-            "trained_models/wakeword/tflite_stream_state_internal_quant/"
+            "generated/trained_models/wakeword/tflite_stream_state_internal_quant/"
             "stream_state_internal_quant.tflite"
         ),
         help="Path to the quantized streaming TFLite model.",
@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=(
-            "trained_models/wakeword/tflite_stream_state_internal_quant/"
+            "generated/trained_models/wakeword/tflite_stream_state_internal_quant/"
             "detection_calibration.json"
         ),
         help="Where to write the selected detector settings as JSON.",

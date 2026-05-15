@@ -6,9 +6,9 @@ wake = sys.argv[1] if len(sys.argv) > 1 else "hey_norman"
 language = (sys.argv[2] if len(sys.argv) > 2 else os.environ.get("MWW_LANGUAGE", "en")).strip().lower() or "en"
 calibration_arg = sys.argv[3] if len(sys.argv) > 3 else os.environ.get("MWW_CALIBRATION_JSON", "")
 calibration_path = Path(calibration_arg) if calibration_arg else Path(
-    "trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
+    "generated/trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
 )
-src = Path("trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite")
+src = Path("generated/trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite")
 dst = Path("stream_state_internal_quant.tflite")
 if not src.exists():
     raise SystemExit(f"❌ Model not found at {src}")

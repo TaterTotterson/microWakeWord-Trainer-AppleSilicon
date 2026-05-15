@@ -179,7 +179,7 @@ def convert_audioset_from_dataset_api(audioset_out: Path):
 # MIT RIR (ZIP-only, always resample to 16 kHz mono)
 # ============================================================
 print("=== MIT RIR ===")
-rir_out = Path("mit_rirs")
+rir_out = Path("datasets/mit_rirs")
 rir_out.mkdir(exist_ok=True)
 
 if not any(rir_out.rglob("*.wav")):
@@ -222,7 +222,7 @@ else:
 # ============================================================
 print("\n=== AudioSet subset (pinned FLAC .tar → 16k mono) ===")
 audioset_dir = Path("audioset"); audioset_dir.mkdir(exist_ok=True)
-audioset_out = Path("audioset_16k"); audioset_out.mkdir(exist_ok=True)
+audioset_out = Path("datasets/audioset_16k"); audioset_out.mkdir(exist_ok=True)
 
 # ✅ skip if already prepared
 if any(audioset_out.rglob("*.wav")):
@@ -310,7 +310,7 @@ else:
 # ============================================================
 print("\n=== FMA xsmall ===")
 fma_zip_dir = Path("fma"); fma_zip_dir.mkdir(exist_ok=True)
-fma_out = Path("fma_16k"); fma_out.mkdir(exist_ok=True)
+fma_out = Path("datasets/fma_16k"); fma_out.mkdir(exist_ok=True)
 
 # ✅ skip if already prepared
 if any(fma_out.rglob("*.wav")):
@@ -359,7 +359,7 @@ else:
 # ============================================================
 print("\n=== WHAM noise ===")
 wham_zip_dir = Path("wham"); wham_zip_dir.mkdir(exist_ok=True)
-wham_out = Path("wham_16k"); wham_out.mkdir(exist_ok=True)
+wham_out = Path("datasets/wham_16k"); wham_out.mkdir(exist_ok=True)
 
 if any(wham_out.rglob("*.wav")):
     print("✅ wham_16k exists; skipping.")
@@ -408,7 +408,7 @@ else:
 # ============================================================
 print("\n=== CHiME-Home ===")
 chime_tar_dir = Path("chime"); chime_tar_dir.mkdir(exist_ok=True)
-chime_out = Path("chime_16k"); chime_out.mkdir(exist_ok=True)
+chime_out = Path("datasets/chime_16k"); chime_out.mkdir(exist_ok=True)
 
 if any(chime_out.rglob("*.wav")):
     print("✅ chime_16k exists; skipping.")

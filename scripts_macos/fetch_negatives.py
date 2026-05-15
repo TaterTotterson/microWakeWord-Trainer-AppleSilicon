@@ -16,7 +16,7 @@ def download(url: str, out: Path):
             f.write(chunk)
             bar.update(len(chunk))
 
-out_dir = Path("negative_datasets")
+out_dir = Path("datasets/negative_datasets")
 out_dir.mkdir(exist_ok=True)
 
 link_root = "https://huggingface.co/datasets/kahrendt/microwakeword/resolve/main/"
