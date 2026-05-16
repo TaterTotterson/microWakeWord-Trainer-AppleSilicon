@@ -1,9 +1,8 @@
-<p align="center">
-  <img 
-    src="https://github.com/user-attachments/assets/27661678-cab6-455d-b31c-41383bd0a3e3" 
-    width="300"
-  />
-</p>
+<div align="center">
+  <a href="https://taterassistant.com">
+    <img src="images/tater-repo-logo.png" alt="microWakeWord Trainer" width="460"/>
+  </a>
+</div>
 <h3 align="center">
   <a href="https://taterassistant.com">taterassistant.com</a>
 </h3>
