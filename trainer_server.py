@@ -5,7 +5,6 @@ import contextlib
 import copy
 import io
 import os
-import random
 import re
 import json
 import shutil
@@ -157,6 +156,8 @@ ANSI_ESCAPE_RE = re.compile(r"\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
 _silero_vad_model = None
 _silero_vad_utils = None
 _SILERO_VAD_LOCK = threading.Lock()
+VAD_SELECTION_PAD_START_S = 0.08
+VAD_SELECTION_PAD_END_S = 0.08
 
 
 def _load_silero_vad():
@@ -2522,15 +2523,18 @@ def vad_segments(bucket: str, file_name: str):
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"VAD failed: {str(e)}"}, status_code=500)
 
-    # Only return the first segment longer than 250ms, with ±10ms jitter on both edges
+    # Only return the first segment longer than 250ms. Add deterministic padding
+    # so VAD remains a guide instead of cropping quiet wake-word onsets too tightly.
     filtered = [s for s in all_segments if (s["end"] - s["start"]) >= 0.25]
     if not filtered:
         return {"ok": True, "file_name": file_name, "segments": [], "segment_count": 0}
     seg = filtered[0]
-    jitter_start = random.uniform(-0.010, -0.030)
-    jitter_end = random.uniform(0.000, 0.020)
-    start = max(0.0, round(seg["start"] + jitter_start, 3))
-    end = round(seg["end"] + jitter_end, 3)
+    info = _inspect_wav_bytes(wav_bytes) or {}
+    duration_s = float(info.get("duration_s") or 0.0)
+    start = max(0.0, round(seg["start"] - VAD_SELECTION_PAD_START_S, 3))
+    end = round(seg["end"] + VAD_SELECTION_PAD_END_S, 3)
+    if duration_s > 0:
+        end = min(duration_s, end)
     if end <= start:
         end = start + 0.001
     segment = {"start": start, "end": end}
@@ -2575,7 +2579,7 @@ async def trim_sample_upload(
 
     # Backup original to trim_history for undo
     TRIM_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     backup_name = f"{ts}_{source_file}"
     backup_path = TRIM_HISTORY_DIR / backup_name
     shutil.copy2(orig_path, backup_path)

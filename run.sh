@@ -69,17 +69,47 @@ if [[ ! -f "$PIN_FILE" ]]; then
   touch "$PIN_FILE"
 else
   echo "✅ Reusing existing .recorder-venv (no upgrades)"
-  if ! "$PY" - "$ESPHOME_VERSION" <<'PY' >/dev/null 2>&1
-import importlib.metadata
+  if ! "$PY" - "$FASTAPI_VERSION" "$UVICORN_VERSION" "$PY_MULTIPART_VERSION" "$ESPHOME_VERSION" <<'PY' >/dev/null 2>&1
+import importlib.metadata as md
 import sys
-import zeroconf
 
-expected = sys.argv[1]
-installed = importlib.metadata.version("esphome")
-raise SystemExit(0 if installed == expected else 1)
+fastapi_version, uvicorn_version, multipart_version, esphome_version = sys.argv[1:5]
+
+def version_tuple(value):
+    parts = []
+    for token in str(value).replace("-", ".").split("."):
+        if token.isdigit():
+            parts.append(int(token))
+        else:
+            digits = "".join(ch for ch in token if ch.isdigit())
+            if digits:
+                parts.append(int(digits))
+            break
+    return tuple(parts)
+
+exact = {
+    "fastapi": fastapi_version,
+    "uvicorn": uvicorn_version,
+    "python-multipart": multipart_version,
+    "esphome": esphome_version,
+}
+minimum = {
+    "silero-vad": "5.0.0",
+    "numpy": "1.24.0",
+}
+present = ("torch", "zeroconf")
+
+for package, expected in exact.items():
+    if md.version(package) != expected:
+        raise SystemExit(1)
+for package, minimum_version in minimum.items():
+    if version_tuple(md.version(package)) < version_tuple(minimum_version):
+        raise SystemExit(1)
+for package in present:
+    md.version(package)
 PY
   then
-    echo "📦 Firmware tab dependencies missing or stale → installing ESPHome firmware dependencies"
+    echo "📦 UI dependencies missing or stale → installing recorder dependencies"
     install_ui_deps
   fi
 fi

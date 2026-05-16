@@ -2,6 +2,7 @@
 personal_samples/
 captured_audio/
 negative_samples/
+trim_history/
 generated_samples/
 generated_augmented_features/
 personal_augmented_features/
