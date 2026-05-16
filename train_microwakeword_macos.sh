@@ -81,6 +81,7 @@ KERAS_VERSION="${KERAS_VERSION:-3.3.3}"
 PROTOBUF_VERSION="${PROTOBUF_VERSION:-4.25.8}"
 FLATBUFFERS_VERSION="${FLATBUFFERS_VERSION:-23.5.26}"
 TORCH_VERSION="${TORCH_VERSION:-2.9.0}"
+TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-${TORCH_VERSION}}"
 
 if [[ ! -d ".venv" ]]; then
   echo "🧪 Creating ARM64 venv with $PYTHON_BIN"
@@ -98,6 +99,39 @@ if [[ ! -x "$PY" ]]; then
   exit 1
 fi
 export PYTHONUNBUFFERED=1
+export TORCH_VERSION TORCHAUDIO_VERSION
+
+ensure_torch_audio_stack() {
+  if "$PY" - <<PY
+import importlib.metadata as md
+import sys
+
+expected = {
+    "torch": "${TORCH_VERSION}",
+    "torchaudio": "${TORCHAUDIO_VERSION}",
+}
+bad = []
+for package, expected_version in expected.items():
+    try:
+        actual = md.version(package).split("+", 1)[0]
+    except md.PackageNotFoundError:
+        actual = "<missing>"
+    if actual != expected_version:
+        bad.append((package, actual, expected_version))
+
+if bad:
+    print("Torch audio stack drift detected:")
+    for package, actual, expected_version in bad:
+        print(f"  - {package}: {actual} (expected {expected_version})")
+    sys.exit(1)
+PY
+  then
+    echo "✅ Torch audio stack verified."
+  else
+    echo "🧯 Repairing torch audio stack to torch==${TORCH_VERSION}, torchaudio==${TORCHAUDIO_VERSION}…"
+    "$PY" -m pip install -q "torch==${TORCH_VERSION}" "torchaudio==${TORCHAUDIO_VERSION}"
+  fi
+}
 
 if [[ ! -f ".venv/.pinned_installed" ]]; then
   echo "🧹 Fresh venv → installing pinned toolchain"
@@ -118,6 +152,8 @@ if [[ ! -f ".venv/.pinned_installed" ]]; then
 else
   echo "✅ Reusing existing .venv (no upgrades)"
 fi
+
+ensure_torch_audio_stack
 
 # ── HARD FAIL: ensure pip is the venv pip ────────────────────────────────────
 VENV_PREFIX="$("$PY" -c 'import sys; print(sys.prefix)')"
@@ -154,16 +190,20 @@ esac
 # ── HARD FAIL: verify pinned versions (no silent drift) ──────────────────────
 "$PY" - <<PY
 import sys
+import importlib.metadata as md
 import tensorflow as tf
 import keras
 import google.protobuf
 import flatbuffers
+import torch
 
 expected = {
   "tensorflow": "${TF_VERSION}",
   "keras": "${KERAS_VERSION}",
   "protobuf": "${PROTOBUF_VERSION}",
   "flatbuffers": "${FLATBUFFERS_VERSION}",
+  "torch": "${TORCH_VERSION}",
+  "torchaudio": "${TORCHAUDIO_VERSION}",
 }
 
 actual = {
@@ -171,6 +211,8 @@ actual = {
   "keras": keras.__version__,
   "protobuf": google.protobuf.__version__,
   "flatbuffers": flatbuffers.__version__,
+  "torch": torch.__version__.split("+", 1)[0],
+  "torchaudio": md.version("torchaudio").split("+", 1)[0],
 }
 
 bad = [(k, actual[k], expected[k]) for k in expected if actual[k] != expected[k]]
@@ -203,6 +245,7 @@ fi
 
 # piper-sample-generator (TaterTotterson fork)
 bash scripts_macos/get_piper_generator.sh
+ensure_torch_audio_stack
 
 # ── verify Metal GPU (optional) ───────────────────────────────────────────────
 "$PY" - <<'PY'

@@ -3,6 +3,10 @@
 set -euo pipefail
 
 PIPER_REPO_URL="https://github.com/TaterTotterson/piper-sample-generator.git"
+PYTHON="${PY:-python}"
+TORCH_VERSION="${TORCH_VERSION:-2.9.0}"
+TORCHAUDIO_VERSION="${TORCHAUDIO_VERSION:-${TORCH_VERSION}}"
+
 download_file() {
   local url="$1"
   local out="$2"
@@ -30,13 +34,13 @@ else
 fi
 
 echo "📦 Installing piper-sample-generator in editable mode…"
-pip install -q -e ./piper-sample-generator
+"$PYTHON" -m pip install -q -e ./piper-sample-generator
 
 # Torch/torchaudio for Mac (MPS works out of the box on Apple Silicon wheels)
-pip install -q torch torchaudio
+"$PYTHON" -m pip install -q "torch==${TORCH_VERSION}" "torchaudio==${TORCHAUDIO_VERSION}"
 
 # (Kept for phonemization parity with your notebook)
-pip install -q piper-phonemize-cross==1.2.1
+"$PYTHON" -m pip install -q piper-phonemize-cross==1.2.1
 
 MODELS_DIR="piper-sample-generator/models"
 VOICES_DIR="piper-sample-generator/voices"
