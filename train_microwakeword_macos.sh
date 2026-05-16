@@ -112,7 +112,7 @@ if [[ ! -f ".venv/.pinned_installed" ]]; then
     "tensorflow-metal==${TF_METAL_VERSION}"
 
   # Pinned torch stack
-  "$PY" -m pip install "torch==${TORCH_VERSION}"
+  "$PY" -m pip install "torch==${TORCH_VERSION}" "torchaudio==${TORCH_VERSION}"
 
   touch ".venv/.pinned_installed"
 else
