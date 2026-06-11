@@ -559,7 +559,7 @@ def _catalog_voice_files(language_family: str) -> List[tuple[str, str]]:
 def _download_to_path(url: str, dest_path: Path):
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
-    req = Request(url, headers={"User-Agent": "microWakeWord-Trainer/1.0"})
+    req = URLRequest(url, headers={"User-Agent": "microWakeWord-Trainer/1.0"})
     with urlopen(req, timeout=60) as resp, open(tmp_path, "wb") as out:
         shutil.copyfileobj(resp, out)
     tmp_path.replace(dest_path)

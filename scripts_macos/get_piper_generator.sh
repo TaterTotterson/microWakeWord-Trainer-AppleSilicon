@@ -22,9 +22,12 @@ download_file() {
 }
 
 # venv assumed active outside
-if [[ ! -d "piper-sample-generator" ]]; then
-  echo "⬇️ Cloning TaterTotterson/piper-sample-generator…"
-  git clone "$PIPER_REPO_URL" >/dev/null
+if [[ ! -d "piper-sample-generator/.git" ]]; then
+  echo "⬇️ Setting up TaterTotterson/piper-sample-generator…"
+  git init piper-sample-generator >/dev/null
+  git -C piper-sample-generator remote add origin "$PIPER_REPO_URL"
+  git -C piper-sample-generator fetch --depth=1 origin HEAD >/dev/null
+  git -C piper-sample-generator checkout -f FETCH_HEAD >/dev/null
 else
   current_origin="$(git -C piper-sample-generator remote get-url origin 2>/dev/null || true)"
   if [[ "$current_origin" != "$PIPER_REPO_URL" ]]; then
