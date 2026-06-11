@@ -21,19 +21,44 @@ download_file() {
   fi
 }
 
-# venv assumed active outside
-if [[ ! -d "piper-sample-generator/.git" ]]; then
-  echo "⬇️ Setting up TaterTotterson/piper-sample-generator…"
-  git init piper-sample-generator >/dev/null
-  git -C piper-sample-generator remote add origin "$PIPER_REPO_URL"
-  git -C piper-sample-generator fetch --depth=1 origin HEAD >/dev/null
-  git -C piper-sample-generator checkout -f FETCH_HEAD >/dev/null
-else
+configure_piper_origin() {
+  local current_origin
+
   current_origin="$(git -C piper-sample-generator remote get-url origin 2>/dev/null || true)"
-  if [[ "$current_origin" != "$PIPER_REPO_URL" ]]; then
+  if [[ -z "$current_origin" ]]; then
+    git -C piper-sample-generator remote add origin "$PIPER_REPO_URL"
+  elif [[ "$current_origin" != "$PIPER_REPO_URL" ]]; then
     echo "🔁 Updating piper-sample-generator origin to TaterTotterson fork…"
     git -C piper-sample-generator remote set-url origin "$PIPER_REPO_URL"
   fi
+}
+
+checkout_piper_generator() {
+  echo "⬇️ Setting up TaterTotterson/piper-sample-generator…"
+  git init piper-sample-generator >/dev/null
+  configure_piper_origin
+  git -C piper-sample-generator fetch --depth=1 origin HEAD >/dev/null
+  git -C piper-sample-generator checkout -f FETCH_HEAD >/dev/null
+}
+
+piper_generator_project_ready() {
+  [[ -f "piper-sample-generator/pyproject.toml" || -f "piper-sample-generator/setup.py" ]]
+}
+
+# venv assumed active outside
+if [[ ! -d "piper-sample-generator/.git" ]] || ! git -C piper-sample-generator rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  checkout_piper_generator
+else
+  configure_piper_origin
+  if ! piper_generator_project_ready; then
+    echo "♻️ piper-sample-generator checkout is incomplete; repairing it…"
+    checkout_piper_generator
+  fi
+fi
+
+if ! piper_generator_project_ready; then
+  echo "❌ piper-sample-generator is missing setup.py or pyproject.toml after setup."
+  exit 1
 fi
 
 echo "📦 Installing piper-sample-generator in editable mode…"
