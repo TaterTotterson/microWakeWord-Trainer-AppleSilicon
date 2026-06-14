@@ -98,7 +98,7 @@ Build the drag-to-Applications installer DMG:
 macos/WakeWordTrainer/scripts/build_dmg.sh
 ```
 
-Tagged releases matching the app version, for example `v1`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
+Tagged releases matching the app version, for example `v5`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
 
 ---
 
