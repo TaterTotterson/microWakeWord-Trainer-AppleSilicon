@@ -1,0 +1,111 @@
+name: Build macOS App
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wakeword-trainer-macos-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: macOS app
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 60
+    env:
+      WAKEWORD_TRAINER_CODESIGN_IDENTITY: "-"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag matches app version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' macos/WakeWordTrainer/Resources/Info.plist)"
+          expected_tag="v${version#v}"
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match macOS app version ${expected_tag}." >&2
+            exit 1
+          fi
+
+      - name: Build updater package
+        shell: bash
+        run: macos/WakeWordTrainer/scripts/package_update.sh
+
+      - name: Build installer DMG
+        shell: bash
+        run: macos/WakeWordTrainer/scripts/build_dmg.sh
+
+      - name: Collect artifact metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' macos/WakeWordTrainer/Resources/Info.plist)"
+          version_token="${version#v}"
+          version_label="v${version_token}"
+          zip_path="macos/WakeWordTrainer/releases/WakeWordTrainer-${version_label}.zip"
+          dmg_path="macos/WakeWordTrainer/releases/WakeWordTrainer-${version_label}.dmg"
+          test -f "${zip_path}"
+          test -f "${dmg_path}"
+          echo "version_label=${version_label}" >> "${GITHUB_OUTPUT}"
+          echo "zip_path=${zip_path}" >> "${GITHUB_OUTPUT}"
+          echo "dmg_path=${dmg_path}" >> "${GITHUB_OUTPUT}"
+          echo "manifest_path=macos/WakeWordTrainer/update-manifest.json" >> "${GITHUB_OUTPUT}"
+          shasum -a 256 "${zip_path}" "${dmg_path}" "macos/WakeWordTrainer/update-manifest.json"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WakeWordTrainer-macOS-${{ steps.meta.outputs.version_label }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.meta.outputs.zip_path }}
+            ${{ steps.meta.outputs.dmg_path }}
+            ${{ steps.meta.outputs.manifest_path }}
+
+      - name: Commit updater files to main
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+            echo "Tag commit is not current origin/main; skipping generated release commit." >&2
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            "${{ steps.meta.outputs.zip_path }}" \
+            "${{ steps.meta.outputs.dmg_path }}" \
+            "${{ steps.meta.outputs.manifest_path }}"
+          if git diff --cached --quiet; then
+            echo "No generated release changes to commit."
+            exit 0
+          fi
+          git commit -m "Add WakeWord Trainer macOS release ${{ steps.meta.outputs.version_label }}"
+          git push origin HEAD:main
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: WakeWord Trainer ${{ steps.meta.outputs.version_label }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            ${{ steps.meta.outputs.zip_path }}
+            ${{ steps.meta.outputs.dmg_path }}
+            ${{ steps.meta.outputs.manifest_path }}

@@ -64,6 +64,44 @@ If you change `REC_PORT`, use that same port in the ESPHome `Trainer App URL`.
 
 ---
 
+## macOS Menu Bar App
+
+The native app lives in:
+
+```text
+macos/WakeWordTrainer/
+```
+
+It wraps the same local web UI, keeps the capture server running from a menu bar item, and opens the trainer in an embedded macOS window. On first launch it copies the bundled trainer source into:
+
+```text
+~/.taterwakewordtrainer/app/current
+```
+
+Captured audio, samples, generated models, caches, and local virtual environments stay in that support folder so app updates do not wipe training data.
+
+Build locally:
+
+```bash
+macos/WakeWordTrainer/scripts/build_app.sh
+```
+
+Build the updater zip and manifest:
+
+```bash
+macos/WakeWordTrainer/scripts/package_update.sh
+```
+
+Build the drag-to-Applications installer DMG:
+
+```bash
+macos/WakeWordTrainer/scripts/build_dmg.sh
+```
+
+Tagged releases matching the app version, for example `v1`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
+
+---
+
 ## Captured Audio Workflow
 
 To collect samples from a sat, flash it with the Tater firmware from [TaterTotterson/microWakeWords](https://github.com/TaterTotterson/microWakeWords). The `Firmware` tab can build and flash the VoicePE or Satellite1 YAMLs directly from that repo.
