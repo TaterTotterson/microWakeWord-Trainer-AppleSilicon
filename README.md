@@ -214,11 +214,12 @@ Piper voices, generated samples, and feature caches are also reused when the sel
 
 The `Firmware` tab flashes prebuilt Tater firmware for supported ESPHome satellites.
 
-- Downloads the latest prebuilt firmware manifest and OTA image from `TaterTotterson/microWakeWords`.
+- Downloads the latest prebuilt firmware manifest plus OTA and USB factory images from `TaterTotterson/microWakeWords`.
 - Verifies downloaded images by size and SHA before upload.
 - Auto-detects ESPHome devices with mDNS when available.
 - Allows manual IP or hostname entry if discovery does not find the device.
 - Saves the selected OTA target for each firmware family.
+- Flashes the prebuilt factory image over Browser USB for first installs or recovery when opened in Chrome or Edge.
 - Lists locally trained wake words from `trained_wake_words/` for live model switching.
 - Streams download, verification, and OTA upload progress in a colorized firmware console.
 
