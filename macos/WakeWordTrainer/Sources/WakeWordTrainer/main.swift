@@ -1125,7 +1125,7 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
         setupView.state = .active
         setupView.wantsLayer = true
 
-        setupLogoView.image = bundledImage(named: "WakeWordIconSource", withExtension: "png")
+        setupLogoView.image = bundledImage(named: "TaterRepoLogo", withExtension: "png")
         setupLogoView.imageScaling = .scaleProportionallyUpOrDown
         setupLogoView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         setupLogoView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
@@ -1161,9 +1161,9 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
             setupView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             setupLogoView.centerXAnchor.constraint(equalTo: setupView.centerXAnchor),
             setupLogoView.centerYAnchor.constraint(equalTo: setupView.centerYAnchor, constant: -70),
-            setupLogoView.widthAnchor.constraint(lessThanOrEqualTo: setupView.widthAnchor, multiplier: 0.36),
-            setupLogoView.heightAnchor.constraint(lessThanOrEqualTo: setupView.heightAnchor, multiplier: 0.36),
-            setupLogoView.widthAnchor.constraint(lessThanOrEqualToConstant: 300),
+            setupLogoView.widthAnchor.constraint(lessThanOrEqualTo: setupView.widthAnchor, multiplier: 0.68),
+            setupLogoView.heightAnchor.constraint(lessThanOrEqualTo: setupView.heightAnchor, multiplier: 0.32),
+            setupLogoView.widthAnchor.constraint(lessThanOrEqualToConstant: 760),
             progressIndicator.centerXAnchor.constraint(equalTo: setupView.centerXAnchor),
             progressIndicator.topAnchor.constraint(equalTo: setupLogoView.bottomAnchor, constant: 30),
             statusTitleLabel.leadingAnchor.constraint(equalTo: setupView.leadingAnchor, constant: 56),

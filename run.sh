@@ -25,7 +25,6 @@ PORT="${REC_PORT:-8789}"
 FASTAPI_VERSION="${REC_FASTAPI_VERSION:-0.115.6}"
 UVICORN_VERSION="${REC_UVICORN_VERSION:-0.30.6}"
 PY_MULTIPART_VERSION="${REC_PY_MULTIPART_VERSION:-0.0.9}"
-ESPHOME_VERSION="${REC_ESPHOME_VERSION:-2026.5.1}"
 
 echo "🎙️ microWakeWord Trainer UI (local)"
 echo "→ ROOT: $ROOT_DIR"
@@ -38,7 +37,7 @@ install_ui_deps() {
     "fastapi==${FASTAPI_VERSION}" \
     "uvicorn[standard]==${UVICORN_VERSION}" \
     "python-multipart==${PY_MULTIPART_VERSION}" \
-    "esphome==${ESPHOME_VERSION}" \
+    "zeroconf>=0.132.2" \
     "silero-vad>=5.0.0" \
     "numpy>=1.24.0"
 }
@@ -69,11 +68,11 @@ if [[ ! -f "$PIN_FILE" ]]; then
   touch "$PIN_FILE"
 else
   echo "✅ Reusing existing .recorder-venv (no upgrades)"
-  if ! "$PY" - "$FASTAPI_VERSION" "$UVICORN_VERSION" "$PY_MULTIPART_VERSION" "$ESPHOME_VERSION" <<'PY' >/dev/null 2>&1
+  if ! "$PY" - "$FASTAPI_VERSION" "$UVICORN_VERSION" "$PY_MULTIPART_VERSION" <<'PY' >/dev/null 2>&1
 import importlib.metadata as md
 import sys
 
-fastapi_version, uvicorn_version, multipart_version, esphome_version = sys.argv[1:5]
+fastapi_version, uvicorn_version, multipart_version = sys.argv[1:4]
 
 def version_tuple(value):
     parts = []
@@ -91,13 +90,13 @@ exact = {
     "fastapi": fastapi_version,
     "uvicorn": uvicorn_version,
     "python-multipart": multipart_version,
-    "esphome": esphome_version,
 }
 minimum = {
     "silero-vad": "5.0.0",
     "numpy": "1.24.0",
+    "zeroconf": "0.132.2",
 }
-present = ("torch", "zeroconf")
+present = ("torch",)
 
 for package, expected in exact.items():
     if md.version(package) != expected:

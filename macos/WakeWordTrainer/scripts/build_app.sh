@@ -24,6 +24,7 @@ cp "${BIN_DIR}/WakeWordTrainer" "${MACOS_DIR}/WakeWordTrainer"
 cp "${PROJECT_DIR}/Resources/Info.plist" "${CONTENTS_DIR}/Info.plist"
 cp "${PROJECT_DIR}/Resources/WakeWordIcon.icns" "${RESOURCES_DIR}/WakeWordIcon.icns"
 cp "${PROJECT_DIR}/Resources/WakeWordIconSource.png" "${RESOURCES_DIR}/WakeWordIconSource.png"
+cp "${REPO_ROOT}/images/tater-repo-logo.png" "${RESOURCES_DIR}/TaterRepoLogo.png"
 cp "${PROJECT_DIR}/Resources/WakeWordMenuBarTemplate.png" "${RESOURCES_DIR}/WakeWordMenuBarTemplate.png"
 rsync -a --delete \
   --exclude='.git/' \
