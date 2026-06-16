@@ -11,6 +11,7 @@ MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 SOURCE_SNAPSHOT_DIR="${RESOURCES_DIR}/TrainerSource"
 CODESIGN_IDENTITY="${WAKEWORD_TRAINER_CODESIGN_IDENTITY:--}"
+CODESIGN_ENTITLEMENTS="${WAKEWORD_TRAINER_CODESIGN_ENTITLEMENTS:-${PROJECT_DIR}/Resources/WakeWordTrainer.entitlements}"
 
 swift build -c release --package-path "${PROJECT_DIR}"
 BIN_DIR="$(swift build -c release --package-path "${PROJECT_DIR}" --show-bin-path)"
@@ -62,7 +63,22 @@ chmod +x "${MACOS_DIR}/WakeWordTrainer"
 chmod +x "${SOURCE_SNAPSHOT_DIR}/run.sh" "${SOURCE_SNAPSHOT_DIR}/train_microwakeword_macos.sh" 2>/dev/null || true
 
 find "${APP_DIR}" -exec xattr -c {} +
-codesign --force --deep --sign "${CODESIGN_IDENTITY}" "${APP_DIR}"
+if [ "${CODESIGN_IDENTITY}" = "-" ]; then
+  codesign --force --deep --sign "${CODESIGN_IDENTITY}" "${APP_DIR}"
+else
+  if [ ! -f "${CODESIGN_ENTITLEMENTS}" ]; then
+    printf 'Missing codesign entitlements: %s\n' "${CODESIGN_ENTITLEMENTS}" >&2
+    exit 1
+  fi
+  codesign \
+    --force \
+    --deep \
+    --options runtime \
+    --timestamp \
+    --entitlements "${CODESIGN_ENTITLEMENTS}" \
+    --sign "${CODESIGN_IDENTITY}" \
+    "${APP_DIR}"
+fi
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 
 printf 'Built %s\n' "${APP_DIR}"

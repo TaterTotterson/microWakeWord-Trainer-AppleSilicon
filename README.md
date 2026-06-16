@@ -23,6 +23,22 @@ Real samples come from device-captured wake audio, close misses, or manual uploa
 
 ---
 
+## macOS App
+
+The easiest way to run the trainer on Apple Silicon is the signed macOS app from the GitHub releases page:
+
+[Download WakeWord Trainer for macOS](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/releases/latest)
+
+The app wraps the same local web UI, keeps the capture server running from the menu bar, and opens the trainer in a native macOS window. It stores captured audio, samples, generated models, caches, and local environments in:
+
+```text
+~/.taterwakewordtrainer/app/current
+```
+
+Use the manual clone flow below if you want to develop the trainer, run directly from source, or inspect the scripts.
+
+---
+
 ## Clone The Repo
 
 ```bash
@@ -97,7 +113,7 @@ Build the drag-to-Applications installer DMG:
 macos/WakeWordTrainer/scripts/build_dmg.sh
 ```
 
-Tagged releases matching the app version, for example `v5`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
+Tagged releases matching the app version, for example `v7`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
 
 ---
 

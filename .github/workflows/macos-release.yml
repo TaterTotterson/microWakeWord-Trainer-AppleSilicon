@@ -19,7 +19,9 @@ jobs:
     runs-on: [self-hosted, macOS]
     timeout-minutes: 60
     env:
-      WAKEWORD_TRAINER_CODESIGN_IDENTITY: "-"
+      WAKEWORD_TRAINER_CODESIGN_IDENTITY: "${{ vars.WAKEWORD_TRAINER_CODESIGN_IDENTITY || 'Developer ID Application: Tater Totterson AI LLC (8BHV7Y2D9D)' }}"
+      WAKEWORD_TRAINER_NOTARIZE: "${{ vars.WAKEWORD_TRAINER_NOTARIZE || '0' }}"
+      WAKEWORD_TRAINER_NOTARY_PROFILE: "${{ vars.WAKEWORD_TRAINER_NOTARY_PROFILE || 'tater-notary' }}"
 
     steps:
       - name: Check out repository
@@ -96,16 +98,77 @@ jobs:
             exit 0
           fi
           git commit -m "Add WakeWord Trainer macOS release ${{ steps.meta.outputs.version_label }}"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Generated release commit push failed on attempt ${attempt}; retrying..." >&2
+            sleep 10
+          done
+          echo "::warning::Generated release files were built, but pushing them to main timed out. Continuing so GitHub Release assets can publish."
 
       - name: Publish GitHub release assets
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: WakeWord Trainer ${{ steps.meta.outputs.version_label }}
-          prerelease: true
-          generate_release_notes: true
-          files: |
-            ${{ steps.meta.outputs.zip_path }}
-            ${{ steps.meta.outputs.dmg_path }}
-            ${{ steps.meta.outputs.manifest_path }}
+        shell: bash
+        env:
+          VERSION_LABEL: ${{ steps.meta.outputs.version_label }}
+          ZIP_PATH: ${{ steps.meta.outputs.zip_path }}
+          DMG_PATH: ${{ steps.meta.outputs.dmg_path }}
+          MANIFEST_PATH: ${{ steps.meta.outputs.manifest_path }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          tag="${GITHUB_REF_NAME}"
+          api_url="https://api.github.com/repos/${repo}"
+          upload_url="https://uploads.github.com/repos/${repo}"
+          auth_header="Authorization: Bearer ${GITHUB_TOKEN}"
+          api_headers=(
+            -H "${auth_header}"
+            -H "Accept: application/vnd.github+json"
+            -H "X-GitHub-Api-Version: 2022-11-28"
+          )
+
+          json_id() {
+            /usr/bin/python3 -c 'import json, sys; print(json.load(sys.stdin).get("id", ""))' 2>/dev/null || true
+          }
+
+          release_id="$(curl -fsS "${api_headers[@]}" "${api_url}/releases/tags/${tag}" | json_id || true)"
+          if [[ -z "${release_id}" ]]; then
+            release_body="$(/usr/bin/python3 -c 'import json, os; print(json.dumps({
+              "tag_name": os.environ["GITHUB_REF_NAME"],
+              "name": "WakeWord Trainer " + os.environ["VERSION_LABEL"],
+              "prerelease": True,
+              "generate_release_notes": True,
+            }))')"
+            release_id="$(curl -fsS \
+              -X POST \
+              "${api_headers[@]}" \
+              -H "Content-Type: application/json" \
+              --data "${release_body}" \
+              "${api_url}/releases" | json_id)"
+          fi
+
+          upload_asset() {
+            local path="$1"
+            local content_type="$2"
+            local name
+            local existing_id
+            name="$(basename "${path}")"
+            existing_id="$(curl -fsS "${api_headers[@]}" "${api_url}/releases/${release_id}/assets?per_page=100" \
+              | /usr/bin/python3 -c 'import json, sys; target = sys.argv[1]; print(next((str(asset.get("id", "")) for asset in json.load(sys.stdin) if asset.get("name") == target), ""))' "${name}" 2>/dev/null || true)"
+            if [[ -n "${existing_id}" ]]; then
+              curl -fsS -X DELETE "${api_headers[@]}" "${api_url}/releases/assets/${existing_id}" >/dev/null
+            fi
+            curl -fsS \
+              -X POST \
+              "${api_headers[@]}" \
+              -H "Content-Type: ${content_type}" \
+              --data-binary @"${path}" \
+              "${upload_url}/releases/${release_id}/assets?name=${name}" \
+              | /usr/bin/python3 -c 'import json, sys; print("uploaded " + json.load(sys.stdin).get("name", ""))'
+          }
+
+          upload_asset "${ZIP_PATH}" "application/zip"
+          upload_asset "${DMG_PATH}" "application/x-apple-diskimage"
+          upload_asset "${MANIFEST_PATH}" "application/json"
