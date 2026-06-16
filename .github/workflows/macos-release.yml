@@ -153,20 +153,40 @@ jobs:
             local path="$1"
             local content_type="$2"
             local name
+            local encoded_name
             local existing_id
             name="$(basename "${path}")"
+            encoded_name="$(/usr/bin/python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "${name}")"
             existing_id="$(curl -fsS "${api_headers[@]}" "${api_url}/releases/${release_id}/assets?per_page=100" \
               | /usr/bin/python3 -c 'import json, sys; target = sys.argv[1]; print(next((str(asset.get("id", "")) for asset in json.load(sys.stdin) if asset.get("name") == target), ""))' "${name}" 2>/dev/null || true)"
             if [[ -n "${existing_id}" ]]; then
               curl -fsS -X DELETE "${api_headers[@]}" "${api_url}/releases/assets/${existing_id}" >/dev/null
             fi
-            curl -fsS \
-              -X POST \
-              "${api_headers[@]}" \
-              -H "Content-Type: ${content_type}" \
-              --data-binary @"${path}" \
-              "${upload_url}/releases/${release_id}/assets?name=${name}" \
-              | /usr/bin/python3 -c 'import json, sys; print("uploaded " + json.load(sys.stdin).get("name", ""))'
+            for attempt in 1 2 3; do
+              local response_path
+              local status
+              response_path="$(mktemp)"
+              status="$(curl --http1.1 -sS -L \
+                -w "%{http_code}" \
+                -o "${response_path}" \
+                -X POST \
+                "${api_headers[@]}" \
+                -H "Content-Type: ${content_type}" \
+                --data-binary @"${path}" \
+                "${upload_url}/releases/${release_id}/assets?name=${encoded_name}")"
+              if [[ "${status}" =~ ^2 ]]; then
+                /usr/bin/python3 -c 'import json, sys; print("uploaded " + json.load(open(sys.argv[1])).get("name", ""))' "${response_path}"
+                rm -f "${response_path}"
+                return 0
+              fi
+              echo "Release asset upload failed for ${name} with HTTP ${status} on attempt ${attempt}." >&2
+              cat "${response_path}" >&2 || true
+              rm -f "${response_path}"
+              if [[ "${attempt}" != "3" ]]; then
+                sleep 10
+              fi
+            done
+            return 1
           }
 
           upload_asset "${ZIP_PATH}" "application/zip"
