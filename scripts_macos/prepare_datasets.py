@@ -1,14 +1,17 @@
 # scripts_macos/prepare_datasets.py
 # macOS-friendly dataset prep (no TorchCodec)
-# - MIT RIR  -> resample to 16 kHz mono
+# - MIT environmental RIRs from Hugging Face -> resample to 16 kHz mono
 # - AudioSet -> pinned FLAC .tar revision, resample to 16 kHz mono, skip bad files
 # - FMA      -> resample to 16 kHz mono, skip bad files
 
 import os
+import json
 import subprocess
 import sys
 import tarfile
 import time
+import urllib.request
+import urllib.parse
 import zipfile
 from pathlib import Path
 import numpy as np
@@ -37,7 +40,11 @@ def curl(url: str, dst: Path, attempts: int = 4, backoff_s: float = 2.0) -> int:
     """Download via curl -L with a few retries for transient network failures."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     for attempt in range(1, attempts + 1):
-        rc = sh(f"curl -L --fail -o '{dst}' '{url}'")
+        rc = sh(
+            "curl -L --fail "
+            "--connect-timeout 20 --speed-time 60 --speed-limit 1024 "
+            f"-o '{dst}' '{url}'"
+        )
         if rc == 0 and dst.exists() and dst.stat().st_size > 0:
             return 0
         if dst.exists():
@@ -50,12 +57,12 @@ def curl(url: str, dst: Path, attempts: int = 4, backoff_s: float = 2.0) -> int:
             time.sleep(backoff_s * attempt)
     return rc
 
-def download_first_available(urls: list[str], dst: Path, label: str):
+def download_first_available(urls: list[str], dst: Path, label: str, attempts: int = 4):
     """Try multiple URLs until one succeeds with a non-empty file."""
     last_error = None
     for url in urls:
         print(f"⬇️ {label}")
-        rc = curl(url, dst)
+        rc = curl(url, dst, attempts=attempts)
         if rc == 0 and dst.exists() and dst.stat().st_size > 0:
             return
         last_error = f"download failed from {url}"
@@ -74,12 +81,25 @@ def ensure_nonempty_download(url: str, dst: Path, label: str):
         dst.unlink()
     download_first_available([url], dst, label)
 
+def is_valid_zip(src: Path) -> bool:
+    return src.exists() and src.stat().st_size > 0 and zipfile.is_zipfile(src)
+
+def ensure_zip_download(urls: list[str], dst: Path, label: str, attempts: int = 4):
+    if is_valid_zip(dst):
+        return
+    if dst.exists():
+        try:
+            dst.unlink()
+        except Exception:
+            pass
+    download_first_available(urls, dst, label, attempts=attempts)
+
 def write_wav(dst: Path, data: np.ndarray, sr: int):
     dst.parent.mkdir(parents=True, exist_ok=True)
     x = np.clip(data, -1.0, 1.0)
     scipy.io.wavfile.write(dst, sr, (x * 32767).astype(np.int16))
 
-def extract_zip_with_python(src: Path, dst: Path, label: str):
+def extract_zip_with_python(src: Path, dst: Path, label: str, member_filter=None):
     """Extract ZIP archives with Python for compatibility with newer ZIP formats."""
     if not src.exists() or src.stat().st_size == 0:
         raise RuntimeError(f"{label} archive is missing or empty: {src}")
@@ -87,11 +107,54 @@ def extract_zip_with_python(src: Path, dst: Path, label: str):
     try:
         with zipfile.ZipFile(src, "r") as zf:
             members = zf.infolist()
+            if member_filter is not None:
+                members = [member for member in members if member_filter(member.filename)]
+                if not members:
+                    raise RuntimeError(f"{label} did not contain matching RIR files")
             print(f"📦 Extracting {src.name} ({len(members)} entries, {archive_size_gb:.1f} GiB)…")
             for member in tqdm(members, desc=f"Extract {src.name}", unit="file"):
                 zf.extract(member, dst)
     except Exception as exc:
         raise RuntimeError(f"Python extraction failed for {label}") from exc
+
+def is_openslr_simulated_rir_member(name: str) -> bool:
+    normalized = str(name or "").replace("\\", "/")
+    return normalized.lower().endswith(".wav") and "/simulated_rirs/" in normalized.lower()
+
+def fetch_json(url: str, timeout_s: int = 30) -> dict:
+    request = urllib.request.Request(url, headers={"User-Agent": "WakeWordTrainer/1.0"})
+    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+def download_hf_mit_rirs(dst: Path) -> int:
+    repo_id = "TaterTotterson/MIT_environmental_impulse_responses"
+    api_url = f"https://huggingface.co/api/datasets/{repo_id}"
+    metadata = fetch_json(api_url)
+    files = sorted(
+        sibling.get("rfilename", "")
+        for sibling in metadata.get("siblings", [])
+        if str(sibling.get("rfilename", "")).startswith("16khz/")
+        and str(sibling.get("rfilename", "")).lower().endswith(".wav")
+    )
+    if not files:
+        raise RuntimeError("Hugging Face MIT RIR dataset did not list any 16khz WAV files")
+
+    downloaded = 0
+    skipped = 0
+    for rel in tqdm(files, desc="Download MIT RIRs", unit="file"):
+        target = dst / rel
+        if target.exists() and target.stat().st_size > 0:
+            skipped += 1
+            continue
+        encoded = urllib.parse.quote(rel, safe="/")
+        url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{encoded}"
+        rc = curl(url, target)
+        if rc != 0 or not target.exists() or target.stat().st_size == 0:
+            raise RuntimeError(f"download failed for {rel}")
+        downloaded += 1
+
+    print(f"✅ Hugging Face MIT RIR download complete ({downloaded} downloaded, {skipped} reused)")
+    return len(files)
 
 def extract_tar_with_progress(src: Path, dst: Path, label: str, mode: str = "r:*"):
     """Extract tar archives with visible progress so long steps don't look stuck."""
@@ -175,30 +238,43 @@ def convert_audioset_from_dataset_api(audioset_out: Path):
     print(f"✅ AudioSet complete via datasets API ({ok} ok, {skipped} skipped, {len(audioset_bad)} failed)")
 
 # ============================================================
-# MIT RIR (ZIP-only, always resample to 16 kHz mono)
+# Room impulse responses (MIT environmental RIRs, always resample to 16 kHz mono)
 # ============================================================
-print("=== MIT RIR ===")
+# Keep the historical directory name because the feature builder reads mit_rirs.
+print("=== Room impulse responses ===")
 rir_out = Path("mit_rirs")
 rir_out.mkdir(exist_ok=True)
+RIR_MIN_READY_FILES = 200
 
-if not any(rir_out.rglob("*.wav")):
+if sum(1 for _ in rir_out.rglob("*.wav")) < RIR_MIN_READY_FILES:
     try:
-        print("⬇️ MIT RIR (fallback ZIP)…")
-        zip_url = "https://mcdermottlab.mit.edu/Reverb/IRMAudio/Audio.zip"
-        zip_path = rir_out.parent / "MIT_RIR_Audio.zip"
-        if not zip_path.exists():
-            rc = curl(zip_url, zip_path)
-            if rc != 0:
-                raise RuntimeError("curl download failed for MIT RIR ZIP")
-
-        extract_zip_with_python(zip_path, rir_out, "MIT RIR ZIP")
+        print("⬇️ MIT environmental impulse responses from Hugging Face…")
+        try:
+            download_hf_mit_rirs(rir_out)
+        except Exception as exc:
+            print(f"⚠️ Hugging Face MIT RIR download failed: {exc}")
+            print("↪️ Falling back to OpenSLR SLR28 simulated room impulse responses.")
+            openslr_urls = [
+                "https://openslr.trmal.net/resources/28/rirs_noises.zip",
+                "https://openslr.elda.org/resources/28/rirs_noises.zip",
+            ]
+            openslr_zip_path = rir_out.parent / "OpenSLR_RIRS_NOISES.zip"
+            ensure_zip_download(openslr_urls, openslr_zip_path, "OpenSLR RIRS_NOISES ZIP")
+            extract_zip_with_python(
+                openslr_zip_path,
+                rir_out,
+                "OpenSLR RIRS_NOISES ZIP",
+                member_filter=is_openslr_simulated_rir_member,
+            )
 
         # Normalize to 16k mono; skip bad files
         normalized = 0
-        print("🔎 Scanning MIT RIR WAV files (please wait)…")
+        print("🔎 Scanning RIR WAV files (please wait)…")
         wavs = list(rir_out.rglob("*.wav"))
+        if not wavs:
+            raise RuntimeError("No RIR WAV files were extracted.")
         bad = []
-        for p in tqdm(wavs, desc="Normalize MIT RIR → 16k mono"):
+        for p in tqdm(wavs, desc="Normalize RIR → 16k mono"):
             try:
                 # Robust decode + resample via librosa
                 y, _sr = librosa.load(p, sr=16000, mono=True)
@@ -210,9 +286,9 @@ if not any(rir_out.rglob("*.wav")):
                 bad.append(f"{p}:{e}")
         if bad:
             (rir_out / "mit_rir_corrupted_files.log").write_text("\n".join(bad))
-        print(f"✅ MIT RIR ready ({normalized} files normalized to 16 kHz, {len(bad)} failed)")
+        print(f"✅ RIR data ready ({normalized} files normalized to 16 kHz, {len(bad)} failed)")
     except Exception as e:
-        print(f"❌ MIT RIR ZIP path failed: {e}")
+        print(f"❌ RIR preparation failed: {e}")
 else:
     print("✅ mit_rirs exists; skipping.")
 
