@@ -1214,6 +1214,79 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
         return nil
     }
 
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptAlertPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping () -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = appDisplayName
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+
+        if let window {
+            alert.beginSheetModal(for: window) { _ in
+                completionHandler()
+            }
+        } else {
+            alert.runModal()
+            completionHandler()
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = appDisplayName
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+
+        if let window {
+            alert.beginSheetModal(for: window) { response in
+                completionHandler(response == .alertFirstButtonReturn)
+            }
+        } else {
+            completionHandler(alert.runModal() == .alertFirstButtonReturn)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (String?) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = appDisplayName
+        alert.informativeText = prompt
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+
+        let input = NSTextField(string: defaultText ?? "")
+        input.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = input
+
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            completionHandler(response == .alertFirstButtonReturn ? input.stringValue : nil)
+        }
+
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
+        }
+    }
+
     private func shouldOpenExternally(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else {
             return false
