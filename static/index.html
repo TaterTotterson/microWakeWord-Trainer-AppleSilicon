@@ -262,6 +262,23 @@
       margin-bottom: 0;
     }
 
+    .firmwareTaterOnlyNotice {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-color: rgba(255,138,42,0.34);
+      background:
+        linear-gradient(135deg, rgba(255,138,42,0.15), rgba(255,255,255,0.035)),
+        var(--panel2);
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .firmwareTaterOnlyNotice strong {
+      color: var(--orange2);
+      white-space: nowrap;
+    }
+
     .firmwareSteps {
       display: flex;
       flex-wrap: wrap;
@@ -360,6 +377,17 @@
       font-size: 12px;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .runtimeWakeWordMeta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .runtimeWakeWordMeta .pill {
+      font-size: 11px;
     }
 
     .runtimeWakeWordItem button {
@@ -1312,7 +1340,7 @@
         <div class="logo"></div>
         <div>
           <h1>microWakeWord Trainer Studio</h1>
-          <p>Train wake words, review captured clips, and flash ESPHome firmware from one local workspace.</p>
+          <p>Train wake words, review captured clips, and flash Tater Native firmware from one local workspace.</p>
         </div>
       </div>
     </div>
@@ -1555,7 +1583,7 @@
           <div>
             <div class="firmwareKicker">Firmware Studio</div>
             <h3>Prebuilt Tater Firmware Flasher</h3>
-            <p>Flash only for firmware updates. If this is a new satellite or it is not already on Tater firmware <code>3.0.3</code> or newer, do one USB flash first, then use this tab for fast OTA updates.</p>
+            <p>Flash only for firmware updates. If this is a new satellite or it is not already on Tater Native Firmware <code>v1</code>, do one USB flash first, then use this tab for fast OTA updates.</p>
             <div class="firmwareSteps" aria-label="Firmware flashing steps">
               <span class="firmwareStepChip"><b>1</b> Pick firmware</span>
               <span class="firmwareStepChip"><b>2</b> Select target</span>
@@ -1566,14 +1594,19 @@
         </div>
       </div>
 
+      <div class="card firmwareTaterOnlyNotice">
+        <strong>Tater only</strong>
+        <span>These native firmware images connect to Tater. They are not Home Assistant or ESPHome satellite firmware.</span>
+      </div>
+
       <div class="card runtimeWakeWordCard">
         <div class="runtimeWakeWordHeader">
           <div class="runtimeWakeWordTitle">
-            <span class="runtimeWakeWordBadge">3.0.3+</span>
+            <span class="runtimeWakeWordBadge">v1</span>
             <div>
               <div class="firmwareKicker">Live Model Switching</div>
-              <h3>Tater firmware 3.0.3 or higher can swap wake words live</h3>
-              <p>No reflash is needed after training. Copy a trained wake word JSON URL below and paste it into your satellite's Home Assistant <code>microWakeWord Model URL</code> entity.</p>
+              <h3>Tater Native satellites can swap wake words live</h3>
+              <p>No reflash is needed after training. Copy a trained wake word JSON URL below and paste it into the native satellite settings in Tater.</p>
             </div>
           </div>
           <span class="pill ok">No reflash needed</span>
@@ -1590,7 +1623,7 @@
               <span class="firmwareStepBadge">1</span>
               <div>
                 <h3>Firmware Image</h3>
-                <p>Choose a prebuilt Tater firmware image from the shared firmware repo.</p>
+                <p>Choose a prebuilt Tater firmware image from the Tater Native Firmware releases.</p>
               </div>
             </div>
           </div>
@@ -1614,7 +1647,7 @@
             <span id="firmwareDetectStatus" class="pill">Not scanned</span>
           </div>
           <div class="row">
-            <button id="refreshFirmwareBtn" type="button">Auto-detect ESPHome devices</button>
+            <button id="refreshFirmwareBtn" type="button">Auto-detect Tater satellites</button>
           </div>
           <div class="firmwareTargetGrid">
             <label class="field">
@@ -1669,7 +1702,7 @@
             </label>
           </div>
         </section>
-        <div class="usbFlashHint">Use Browser USB Flash for new satellites, recovery, or devices older than Tater firmware 3.0.3. Chrome or Edge must be used on localhost or HTTPS. In the macOS app, open <code>http://127.0.0.1:8789</code> in Chrome or Edge; port <code>3232</code> is only for OTA updates after firmware is installed.</div>
+        <div class="usbFlashHint">Use Browser USB Flash for new satellites, recovery, or devices not already running Tater Native Firmware v1. Chrome or Edge must be used on localhost or HTTPS. In the macOS app, open <code>http://127.0.0.1:8789</code> in Chrome or Edge; port <code>3232</code> is only for OTA updates after native firmware is installed.</div>
       </section>
     </div>
   </div>
@@ -3236,6 +3269,13 @@
       .map((item) => ({
         label: String(item.label || item.wake_word || item.wake_word_name || item.key || "Trained wake word"),
         url: String(item.json_url || "").trim(),
+        threshold: item.threshold,
+        slidingWindow: item.sliding_window,
+        closeMissThreshold: item.close_miss_threshold,
+        quantization: String(item.quantization || "").trim(),
+        modelFormat: String(item.model_format || "").trim(),
+        recall: item.calibration_recall,
+        falseAcceptsPerHour: item.calibration_false_accepts_per_hour,
       }))
       .filter((item) => item.url);
 
@@ -3244,15 +3284,27 @@
       return;
     }
 
-    container.innerHTML = rows.map((item) => `
+    container.innerHTML = rows.map((item) => {
+      const meta = [];
+      if (item.threshold !== null && item.threshold !== undefined) meta.push(`<span class="pill">threshold ${escapeHtml(item.threshold)}</span>`);
+      if (item.slidingWindow !== null && item.slidingWindow !== undefined) meta.push(`<span class="pill">window ${escapeHtml(item.slidingWindow)}</span>`);
+      if (item.closeMissThreshold !== null && item.closeMissThreshold !== undefined) meta.push(`<span class="pill">close miss ${escapeHtml(item.closeMissThreshold)}</span>`);
+      if (item.quantization) meta.push(`<span class="pill">${escapeHtml(item.quantization)}</span>`);
+      const recall = Number(item.recall);
+      const faph = Number(item.falseAcceptsPerHour);
+      if (Number.isFinite(recall)) meta.push(`<span class="pill">recall ${(recall * 100).toFixed(1)}%</span>`);
+      if (Number.isFinite(faph)) meta.push(`<span class="pill">FA/h ${escapeHtml(faph)}</span>`);
+      return `
       <div class="runtimeWakeWordItem">
         <div>
           <strong>${escapeHtml(item.label)}</strong>
           <a class="runtimeWakeWordUrl" href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a>
+          ${meta.length ? `<div class="runtimeWakeWordMeta">${meta.join("")}</div>` : ""}
         </div>
         <button type="button" data-runtime-wake-url="${escapeAttr(item.url)}">Copy URL</button>
       </div>
-    `).join("");
+    `;
+    }).join("");
   }
 
   async function copyTextToClipboard(text) {
@@ -3633,7 +3685,7 @@
       syncRenderedWakeSoundSelection({ fromPicker: true });
     }
 
-    const ok = confirm(`Flash prebuilt ${template.label || template.value} firmware to ${host}:${port || "3232"}?\n\nOnly continue if this device is already running Tater firmware 3.0.3 or newer. New devices need one USB flash first.`);
+    const ok = confirm(`Flash prebuilt ${template.label || template.value} firmware to ${host}:${port || "3232"}?\n\nOnly continue if this device is already running Tater Native Firmware v1. New devices need one USB flash first.`);
     if (!ok) return;
 
     uiState.firmwareBusy = true;
@@ -3698,7 +3750,7 @@
       return;
     }
     const actionLabel = wifiEnabled ? "USB flash and set up Wi-Fi" : "USB flash";
-    const ok = confirm(`${actionLabel} for the prebuilt ${template.label || template.value} factory firmware?\n\nThis is for new satellites, recovery, or devices older than Tater firmware 3.0.3. It erases flash and writes the factory image over USB.`);
+    const ok = confirm(`${actionLabel} for the prebuilt ${template.label || template.value} factory firmware?\n\nThis is for new satellites, recovery, or devices not already running Tater Native Firmware v1. It erases flash and writes the factory image over USB.`);
     if (!ok) return;
 
     let port;

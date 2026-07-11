@@ -16,7 +16,7 @@ Real samples come from device-captured wake audio, close misses, or manual uploa
 ## What The UI Does
 
 - `Trainer` starts a wake-word session, shows positive/negative sample counts, and launches training.
-- `Captured Audio` reviews clips sent by ESPHome sats, including wake hits, close misses, and false wakes.
+- `Captured Audio` reviews clips sent by Tater Native or ESPHome sats, including wake hits, close misses, and false wakes.
 - `Samples` plays, removes, clears, and manually imports personal or negative samples.
 - `Firmware` pulls verified prebuilt Tater firmware images from GitHub and flashes supported satellites over OTA.
 - Popup consoles show colorized training and firmware logs while long-running jobs are active.
@@ -59,7 +59,7 @@ The launcher:
 - requires Python `3.11` by default at `/opt/homebrew/bin/python3.11`
 - creates or reuses `.recorder-venv`
 - installs the UI and firmware flasher dependencies
-- serves the app on `0.0.0.0:8789` so ESPHome devices can send captured audio
+- serves the app on `0.0.0.0:8789` so satellites can send captured audio
 
 Open:
 
@@ -75,7 +75,7 @@ REC_PORT=8790 ./run.sh
 REC_PYTHON_BIN=/path/to/python3.11 ./run.sh
 ```
 
-If you change `REC_PORT`, use that same port in the ESPHome `Trainer App URL`.
+If you change `REC_PORT`, use that same port in the satellite `Trainer App URL`.
 
 ---
 
@@ -119,15 +119,21 @@ Tagged releases matching the app version, for example `v7`, run `.github/workflo
 
 ## Captured Audio Workflow
 
-To collect samples from a sat, flash it with the Tater firmware from [TaterTotterson/microWakeWords](https://github.com/TaterTotterson/microWakeWords). The `Firmware` tab can pull verified prebuilt OTA images from that repo for fast firmware updates.
+To collect samples from a sat, point its trainer feedback setting at this app. Tater Native satellites use the native settings popup in Tater. Older ESPHome satellites can still use their device entities.
 
-After flashing, the device exposes ESPHome entities for capture setup:
+For Tater Native satellites, enable trainer feedback in Tater:
+
+- `Send Good Wakes To Trainer` toggles upload of confirmed wake-word triggers.
+- `Send Close Misses To Trainer` toggles upload of near misses.
+- `Trainer App URL` sets the trainer address, for example `http://trainer.local:8789` or `http://<trainer-ip>:8789`.
+
+For older ESPHome firmware, the equivalent capture setup is exposed as device entities:
 
 - `Capture Wake Audio` toggles upload of wake-word triggers.
 - `Capture Close Misses` toggles upload of near misses.
 - `Trainer App URL` sets the trainer address, for example `http://<trainer-ip>:8789`.
 
-ESPHome devices can send raw captured audio to:
+Satellites send raw captured audio to:
 
 ```text
 /api/upload_captured_audio_raw
@@ -228,18 +234,20 @@ Piper voices, generated samples, and feature caches are also reused when the sel
 
 ## Firmware Flashing
 
-The `Firmware` tab flashes prebuilt Tater firmware for supported ESPHome satellites.
+The `Firmware` tab flashes prebuilt Tater firmware for supported satellites.
 
-- Downloads the latest prebuilt firmware manifest plus OTA and USB factory images from `TaterTotterson/microWakeWords`.
+- Downloads the latest prebuilt firmware manifest plus OTA and USB factory images from [`TaterTotterson/Tater-Native-Firmware`](https://github.com/TaterTotterson/Tater-Native-Firmware).
 - Verifies downloaded images by size and SHA before upload.
-- Auto-detects ESPHome devices with mDNS when available.
+- Auto-detects compatible devices with mDNS when available.
 - Allows manual IP or hostname entry if discovery does not find the device.
 - Saves the selected OTA target for each firmware family.
 - Flashes the prebuilt factory image over Browser USB for first installs or recovery when opened in Chrome or Edge.
 - Lists locally trained wake words from `trained_wake_words/` for live model switching.
 - Streams download, verification, and OTA upload progress in a colorized firmware console.
 
-You usually only flash for firmware updates. New satellites, or devices older than Tater firmware `3.0.3`, need one USB flash first before OTA updates and live wake-word switching are available.
+> **Tater only:** these native firmware images connect to Tater. They are not Home Assistant or ESPHome satellite firmware.
+
+You usually only flash for firmware updates. New satellites, or devices not already running Tater Native Firmware `v1`, need one USB flash first before OTA updates and live wake-word switching are available.
 
 ---
 
@@ -253,6 +261,42 @@ trained_wake_words/<wake_word>.json
 ```
 
 The firmware tab uses this folder to populate the wake-word dropdown.
+
+The JSON keeps the standard microWakeWord fields for compatibility:
+
+```json
+{
+  "micro": {
+    "probability_cutoff": 0.97,
+    "sliding_window_size": 5
+  }
+}
+```
+
+It also includes Tater Native metadata used by newer satellites and the Tater settings UI:
+
+```json
+{
+  "model_format": "tflite_stream_state_internal_quant",
+  "quantization": "int8",
+  "sample_rate": 16000,
+  "tater_native": {
+    "format_version": 1,
+    "wake_threshold": 0.97,
+    "wake_sliding_window": 5,
+    "close_miss_threshold": 0.78,
+    "frontend": {
+      "name": "tflm_microfrontend",
+      "sample_rate": 16000,
+      "feature_duration_ms": 30,
+      "feature_step_ms": 10,
+      "feature_size": 40
+    }
+  }
+}
+```
+
+Calibration metrics are included under `calibration` so false accepts/hour and recall can be surfaced in the UI.
 
 Intermediate training files are created under:
 
@@ -280,7 +324,7 @@ If `personal_samples/*.wav` or `negative_samples/*.wav` exists, those samples ar
 - Negative samples are optional but useful for reducing false wakes.
 - The UI server is `trainer_server.py`.
 - The launcher is `run.sh`.
-- Firmware capture settings live on the ESPHome device and can be toggled from the device entities after flashing.
+- Firmware capture settings live in Tater for Tater Native satellites, and on device entities for older ESPHome satellites.
 
 ---
 
