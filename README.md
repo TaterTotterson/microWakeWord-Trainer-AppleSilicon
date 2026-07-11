@@ -242,6 +242,7 @@ The `Firmware` tab flashes prebuilt Tater firmware for supported satellites.
 - Allows manual IP or hostname entry if discovery does not find the device.
 - Saves the selected OTA target for each firmware family.
 - Flashes the prebuilt factory image over Browser USB for first installs or recovery when opened in Chrome or Edge.
+- Leaves Wi-Fi, Tater server, and pairing setup to the satellite setup portal after USB flash.
 - Lists locally trained wake words from `trained_wake_words/` for live model switching.
 - Streams download, verification, and OTA upload progress in a colorized firmware console.
 
