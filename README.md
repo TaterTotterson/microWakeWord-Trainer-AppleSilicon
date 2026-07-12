@@ -7,7 +7,7 @@
   <a href="https://taterassistant.com">taterassistant.com</a>
 </h3>
 
-Train custom microWakeWord models on Apple Silicon with a local web UI, generated Piper samples, device-captured samples, reviewed false-wake negatives, live training logs, and prebuilt Tater firmware flashing.
+Train custom microWakeWord models on Apple Silicon with a local web UI, generated Piper samples, device-captured samples, reviewed false-wake negatives, live training logs, and local wake-word links for Tater Native satellites.
 
 Real samples come from device-captured wake audio, close misses, or manual uploads. Every saved sample is normalized to `16 kHz / mono / 16-bit PCM WAV` before training.
 
@@ -18,8 +18,8 @@ Real samples come from device-captured wake audio, close misses, or manual uploa
 - `Trainer` starts a wake-word session, shows positive/negative sample counts, and launches training.
 - `Captured Audio` reviews clips sent by Tater Native or ESPHome sats, including wake hits, close misses, and false wakes.
 - `Samples` plays, removes, clears, and manually imports personal or negative samples.
-- `Firmware` pulls verified prebuilt Tater firmware images from GitHub and flashes supported satellites over OTA.
-- Popup consoles show colorized training and firmware logs while long-running jobs are active.
+- `Wake Words` lists locally trained JSON/model links for live wake-word switching in Tater.
+- Popup consoles show colorized training logs while long-running jobs are active.
 
 ---
 
@@ -58,7 +58,7 @@ The launcher:
 
 - requires Python `3.11` by default at `/opt/homebrew/bin/python3.11`
 - creates or reuses `.recorder-venv`
-- installs the UI and firmware flasher dependencies
+- installs the UI dependencies
 - serves the app on `0.0.0.0:8789` so satellites can send captured audio
 
 Open:
@@ -232,23 +232,16 @@ Piper voices, generated samples, and feature caches are also reused when the sel
 
 ---
 
-## Firmware Flashing
+## Trained Wake Words
 
-The `Firmware` tab flashes prebuilt Tater firmware for supported satellites.
+The `Wake Words` tab lists locally trained wake-word packages from `trained_wake_words/`.
 
-- Downloads the latest prebuilt firmware manifest plus OTA and USB factory images from [`TaterTotterson/Tater-Native-Firmware`](https://github.com/TaterTotterson/Tater-Native-Firmware).
-- Verifies downloaded images by size and SHA before upload.
-- Auto-detects compatible devices with mDNS when available.
-- Allows manual IP or hostname entry if discovery does not find the device.
-- Saves the selected OTA target for each firmware family.
-- Flashes the prebuilt factory image over Browser USB for first installs or recovery when opened in Chrome or Edge.
-- Leaves Wi-Fi, Tater server, and pairing setup to the satellite setup portal after USB flash.
-- Lists locally trained wake words from `trained_wake_words/` for live model switching.
-- Streams download, verification, and OTA upload progress in a colorized firmware console.
+- Copy the JSON URL into the Tater Native satellite settings to switch wake words live.
+- Open the JSON or model links directly for quick inspection.
+- The JSON includes the matching model path plus Tater tuning metadata.
+- No firmware flashing happens from this trainer app anymore.
 
-> **Tater only:** these native firmware images connect to Tater. They are not Home Assistant or ESPHome satellite firmware.
-
-You usually only flash for firmware updates. New satellites, or devices not already running Tater Native Firmware `v1`, need one USB flash first before OTA updates and live wake-word switching are available.
+Use the main Tater app for satellite firmware updates and USB flashing.
 
 ---
 
@@ -261,7 +254,7 @@ trained_wake_words/<wake_word>.tflite
 trained_wake_words/<wake_word>.json
 ```
 
-The firmware tab uses this folder to populate the wake-word dropdown.
+The `Wake Words` tab uses this folder to populate the local wake-word links.
 
 The JSON keeps the standard microWakeWord fields for compatibility:
 
@@ -325,7 +318,7 @@ If `personal_samples/*.wav` or `negative_samples/*.wav` exists, those samples ar
 - Negative samples are optional but useful for reducing false wakes.
 - The UI server is `trainer_server.py`.
 - The launcher is `run.sh`.
-- Firmware capture settings live in Tater for Tater Native satellites, and on device entities for older ESPHome satellites.
+- Trainer feedback settings live in Tater for Tater Native satellites, and on device entities for older ESPHome satellites.
 
 ---
 

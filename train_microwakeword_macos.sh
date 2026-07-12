@@ -536,6 +536,7 @@ echo "📝 Writing training config…"
 
 # ── (H) train + export (Metal TF) ────────────────────────────────────────────
 echo "🏋️ Starting model training and TFLite export (this is the longest stage)…"
+echo "🧠 Model quality: high_accuracy_plus"
 "$PY" -m microwakeword.model_train_eval \
   --training_config=training_parameters.yaml \
   --train 1 \
@@ -547,11 +548,11 @@ echo "🏋️ Starting model training and TFLite export (this is the longest sta
   --test_tflite_streaming_quantized 1 \
   --use_weights "best_weights" \
   mixednet \
-  --pointwise_filters "64,64,64,64" \
+  --pointwise_filters "128,128,128,128" \
   --repeat_in_block "1,1,1,1" \
   --mixconv_kernel_sizes "[5], [7,11], [9,15], [23]" \
   --residual_connection "0,0,0,0" \
-  --first_conv_filters 32 \
+  --first_conv_filters 64 \
   --first_conv_kernel_size 5 \
   --stride 2
 
@@ -561,7 +562,11 @@ echo "🎯 Calibrating detector settings for on-device use…"
 if "$PY" scripts_macos/calibrate_detector.py \
   --training-config "trained_models/wakeword/training_config.yaml" \
   --model "trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite" \
-  --output "$CALIBRATION_JSON"; then
+  --output "$CALIBRATION_JSON" \
+  --target-faph "${MWW_CALIBRATION_TARGET_FAPH:-0.25}" \
+  --window-sizes "${MWW_CALIBRATION_WINDOW_SIZES:-4,5,6,7}" \
+  --cutoff-min "${MWW_CALIBRATION_CUTOFF_MIN:-0.85}" \
+  --cutoff-max "${MWW_CALIBRATION_CUTOFF_MAX:-1.00}"; then
   echo "✅ Detector calibration complete."
 else
   echo "⚠️ Detector calibration failed; packaging with default detector settings."
@@ -591,8 +596,9 @@ if not src.exists():
     raise SystemExit(f"❌ Model not found at {src}")
 shutil.copy(src, dst)
 
-probability_cutoff = 0.97
-sliding_window_size = 5
+probability_cutoff = 0.85
+sliding_window_size = 4
+strict_min_close_miss_threshold = 0.68
 calibration = {}
 if calibration_path.exists():
     try:
@@ -610,7 +616,10 @@ probability_cutoff = round(probability_cutoff, 3)
 sliding_window_size = max(1, min(10, int(sliding_window_size)))
 selected_metrics = calibration.get("selected_metrics") if isinstance(calibration.get("selected_metrics"), dict) else {}
 evaluation = calibration.get("evaluation") if isinstance(calibration.get("evaluation"), dict) else {}
-close_miss_threshold = max(0.01, min(0.99, round(max(0.01, probability_cutoff - 0.19), 3)))
+close_miss_threshold = max(
+    0.01,
+    min(0.99, round(max(strict_min_close_miss_threshold, probability_cutoff - 0.17), 3)),
+)
 
 meta = {
   "type": "micro",

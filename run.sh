@@ -32,12 +32,11 @@ echo "→ VENV: $VENV_DIR"
 echo "→ PYTHON_BIN: $PYTHON_BIN"
 
 install_ui_deps() {
-  # Core server + firmware flasher deps
+  # Core server deps
   $PIP install \
     "fastapi==${FASTAPI_VERSION}" \
     "uvicorn[standard]==${UVICORN_VERSION}" \
     "python-multipart==${PY_MULTIPART_VERSION}" \
-    "zeroconf>=0.132.2" \
     "silero-vad>=5.0.0" \
     "numpy>=1.24.0"
 }
@@ -94,7 +93,6 @@ exact = {
 minimum = {
     "silero-vad": "5.0.0",
     "numpy": "1.24.0",
-    "zeroconf": "0.132.2",
 }
 present = ("torch",)
 
