@@ -11,6 +11,9 @@ trained_wake_words/
 trained_models/
 output/
 recorder_training.log
+auto_train_config.json
+auto_train_state.json
+auto_train_models/
 
 # Local caches and virtual environments
 .cache/

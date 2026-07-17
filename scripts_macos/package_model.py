@@ -16,7 +16,7 @@ if not src.exists():
 shutil.copy(src, dst)
 
 probability_cutoff = 0.97
-sliding_window_size = 5
+sliding_window_size = 6
 calibration = {}
 if calibration_path.exists():
     try:
@@ -34,7 +34,10 @@ probability_cutoff = round(probability_cutoff, 3)
 sliding_window_size = max(1, min(10, int(sliding_window_size)))
 selected_metrics = calibration.get("selected_metrics") if isinstance(calibration.get("selected_metrics"), dict) else {}
 evaluation = calibration.get("evaluation") if isinstance(calibration.get("evaluation"), dict) else {}
-close_miss_threshold = max(0.01, min(0.99, round(max(0.01, probability_cutoff - 0.19), 3)))
+close_miss_threshold = max(
+    0.01,
+    min(0.99, round(max(0.68, probability_cutoff - 0.17), 3)),
+)
 
 meta = {
   "type": "micro",

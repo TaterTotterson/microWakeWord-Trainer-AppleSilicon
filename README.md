@@ -16,6 +16,7 @@ Real samples come from device-captured wake audio, close misses, or manual uploa
 ## What The UI Does
 
 - `Trainer` starts a wake-word session, shows positive/negative sample counts, and launches training.
+- `Auto Training` transcribes wake triggers, files phrase-misses as reviewed negatives, retrains on a schedule, and requests a satellite model refresh through Tater.
 - `Captured Audio` reviews clips sent by Tater Native or ESPHome sats, including wake hits, close misses, and false wakes.
 - `Samples` plays, removes, clears, and manually imports personal or negative samples.
 - `Wake Words` lists locally trained JSON/model links for live wake-word switching in Tater.
@@ -113,7 +114,9 @@ Build the drag-to-Applications installer DMG:
 macos/WakeWordTrainer/scripts/build_dmg.sh
 ```
 
-Tagged releases matching the app version, for example `v7`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
+Tagged releases matching the app version, for example `v14`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
+
+Update `WHATS_NEW.md` before creating a release tag. The workflow prepends that curated section to GitHub's automatically generated release notes.
 
 ---
 
@@ -209,6 +212,23 @@ Reviewed negative samples are included as a separate hard-negative feature set w
 
 ---
 
+## Auto Training
+
+Auto Training is disabled until it is configured in its own tab.
+
+1. Enter the active wake phrase and STT language.
+2. Choose how often training may run and how many new negatives are required.
+3. Set the Tater URL (normally `http://127.0.0.1:8501` when Tater runs on the same Mac) and optional API token or satellite selector.
+4. Save and enable Auto Training.
+
+New wake-trigger captures are transcribed locally with MLX Whisper. Close misses are not auto-filed. If STT returns no useful text, a different wake word is named in the capture metadata, or the configured wake phrase is present, the clip stays in `Captured Audio` for manual review. A wake trigger moves to `negative_samples/` only when STT returns text and the configured wake phrase is absent. The transcript and auto-review reason remain in the sample metadata for auditing.
+
+The first automatic transcription downloads the configured MLX Whisper model into `auto_train_models/`. Scheduled training only starts after the configured number of new auto-reviewed negatives has accumulated. A successful automatic run asks Tater to re-push native satellite live settings; the current Tater Native firmware treats that settings generation as a forced refresh and downloads the updated model even though its JSON URL has not changed.
+
+Use `Review inbox now`, `Train now`, and `Refresh satellites now` to run each stage manually while testing the setup.
+
+---
+
 ## Language Support
 
 The language picker is dynamic.
@@ -256,13 +276,21 @@ trained_wake_words/<wake_word>.json
 
 The `Wake Words` tab uses this folder to populate the local wake-word links.
 
+Wake-word links now advertise a LAN-reachable address instead of copying the browser's `127.0.0.1` host. The trainer uses this order:
+
+1. `Trainer public URL` from the Auto Training tab
+2. `REC_PUBLIC_BASE_URL`
+3. an automatically discovered LAN IPv4 address and `REC_PORT`
+
+Set the public URL explicitly if the Mac has multiple network interfaces or the satellites reach it through a different hostname.
+
 The JSON keeps the standard microWakeWord fields for compatibility:
 
 ```json
 {
   "micro": {
     "probability_cutoff": 0.97,
-    "sliding_window_size": 5
+    "sliding_window_size": 6
   }
 }
 ```
@@ -277,8 +305,8 @@ It also includes Tater Native metadata used by newer satellites and the Tater se
   "tater_native": {
     "format_version": 1,
     "wake_threshold": 0.97,
-    "wake_sliding_window": 5,
-    "close_miss_threshold": 0.78,
+    "wake_sliding_window": 6,
+    "close_miss_threshold": 0.80,
     "frontend": {
       "name": "tflm_microfrontend",
       "sample_rate": 16000,
@@ -291,6 +319,7 @@ It also includes Tater Native metadata used by newer satellites and the Tater se
 ```
 
 Calibration metrics are included under `calibration` so false accepts/hour and recall can be surfaced in the UI.
+Calibration evaluates thresholds from `0.95` through `1.00` with sliding windows of `5`, `6`, and `7`. Among candidates within 0.5 percentage points of the best recall, it prefers the lowest measured ambient false-accept rate. If calibration cannot complete, packaging uses the conservative `0.97` threshold and a window of `6`.
 
 Intermediate training files are created under:
 

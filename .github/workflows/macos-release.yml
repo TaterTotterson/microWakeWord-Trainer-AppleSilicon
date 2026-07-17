@@ -115,6 +115,7 @@ jobs:
           ZIP_PATH: ${{ steps.meta.outputs.zip_path }}
           DMG_PATH: ${{ steps.meta.outputs.dmg_path }}
           MANIFEST_PATH: ${{ steps.meta.outputs.manifest_path }}
+          WHATS_NEW_PATH: WHATS_NEW.md
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -133,13 +134,38 @@ jobs:
             /usr/bin/python3 -c 'import json, sys; print(json.load(sys.stdin).get("id", ""))' 2>/dev/null || true
           }
 
+          test -s "${WHATS_NEW_PATH}"
+          generated_notes="$(mktemp)"
+          release_notes="$(mktemp)"
+          notes_request="$(/usr/bin/python3 -c 'import json, os; print(json.dumps({
+            "tag_name": os.environ["GITHUB_REF_NAME"],
+            "target_commitish": os.environ["GITHUB_SHA"],
+          }))')"
+          curl -fsS \
+            -X POST \
+            "${api_headers[@]}" \
+            -H "Content-Type: application/json" \
+            --data "${notes_request}" \
+            "${api_url}/releases/generate-notes" \
+            | /usr/bin/python3 -c 'import json, sys; print(json.load(sys.stdin).get("body", ""))' \
+            > "${generated_notes}"
+          {
+            echo "## What's New"
+            echo
+            cat "${WHATS_NEW_PATH}"
+            echo
+            echo
+            cat "${generated_notes}"
+          } > "${release_notes}"
+          export RELEASE_NOTES_PATH="${release_notes}"
+
           release_id="$(curl -fsS "${api_headers[@]}" "${api_url}/releases/tags/${tag}" | json_id || true)"
           if [[ -z "${release_id}" ]]; then
             release_body="$(/usr/bin/python3 -c 'import json, os; print(json.dumps({
               "tag_name": os.environ["GITHUB_REF_NAME"],
               "name": "WakeWord Trainer " + os.environ["VERSION_LABEL"],
               "prerelease": True,
-              "generate_release_notes": True,
+              "body": open(os.environ["RELEASE_NOTES_PATH"], encoding="utf-8").read(),
             }))')"
             release_id="$(curl -fsS \
               -X POST \
@@ -147,6 +173,18 @@ jobs:
               -H "Content-Type: application/json" \
               --data "${release_body}" \
               "${api_url}/releases" | json_id)"
+          else
+            release_body="$(/usr/bin/python3 -c 'import json, os; print(json.dumps({
+              "name": "WakeWord Trainer " + os.environ["VERSION_LABEL"],
+              "prerelease": True,
+              "body": open(os.environ["RELEASE_NOTES_PATH"], encoding="utf-8").read(),
+            }))')"
+            curl -fsS \
+              -X PATCH \
+              "${api_headers[@]}" \
+              -H "Content-Type: application/json" \
+              --data "${release_body}" \
+              "${api_url}/releases/${release_id}" >/dev/null
           fi
 
           upload_asset() {

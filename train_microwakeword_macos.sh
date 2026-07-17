@@ -564,8 +564,9 @@ if "$PY" scripts_macos/calibrate_detector.py \
   --model "trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite" \
   --output "$CALIBRATION_JSON" \
   --target-faph "${MWW_CALIBRATION_TARGET_FAPH:-0.25}" \
-  --window-sizes "${MWW_CALIBRATION_WINDOW_SIZES:-4,5,6,7}" \
-  --cutoff-min "${MWW_CALIBRATION_CUTOFF_MIN:-0.85}" \
+  --recall-margin "${MWW_CALIBRATION_RECALL_MARGIN:-0.005}" \
+  --window-sizes "${MWW_CALIBRATION_WINDOW_SIZES:-5,6,7}" \
+  --cutoff-min "${MWW_CALIBRATION_CUTOFF_MIN:-0.95}" \
   --cutoff-max "${MWW_CALIBRATION_CUTOFF_MAX:-1.00}"; then
   echo "✅ Detector calibration complete."
 else
@@ -596,8 +597,8 @@ if not src.exists():
     raise SystemExit(f"❌ Model not found at {src}")
 shutil.copy(src, dst)
 
-probability_cutoff = 0.85
-sliding_window_size = 4
+probability_cutoff = 0.97
+sliding_window_size = 6
 strict_min_close_miss_threshold = 0.68
 calibration = {}
 if calibration_path.exists():

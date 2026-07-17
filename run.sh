@@ -38,7 +38,8 @@ install_ui_deps() {
     "uvicorn[standard]==${UVICORN_VERSION}" \
     "python-multipart==${PY_MULTIPART_VERSION}" \
     "silero-vad>=5.0.0" \
-    "numpy>=1.24.0"
+    "numpy>=1.24.0" \
+    "mlx-whisper"
 }
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -94,7 +95,7 @@ minimum = {
     "silero-vad": "5.0.0",
     "numpy": "1.24.0",
 }
-present = ("torch",)
+present = ("torch", "mlx-whisper")
 
 for package, expected in exact.items():
     if md.version(package) != expected:
