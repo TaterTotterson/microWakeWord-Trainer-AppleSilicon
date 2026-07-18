@@ -114,7 +114,7 @@ Build the drag-to-Applications installer DMG:
 macos/WakeWordTrainer/scripts/build_dmg.sh
 ```
 
-Tagged releases matching the app version, for example `v14`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
+Tagged releases matching the app version, for example `v15`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
 
 Update `WHATS_NEW.md` before creating a release tag. The workflow prepends that curated section to GitHub's automatically generated release notes.
 
@@ -221,7 +221,16 @@ Auto Training is disabled until it is configured in its own tab.
 3. Set the Tater URL (normally `http://127.0.0.1:8501` when Tater runs on the same Mac) and optional API token or satellite selector.
 4. Save and enable Auto Training.
 
-New wake-trigger captures are transcribed locally with MLX Whisper. Close misses are not auto-filed. If STT returns no useful text, a different wake word is named in the capture metadata, or the configured wake phrase is present, the clip stays in `Captured Audio` for manual review. A wake trigger moves to `negative_samples/` only when STT returns text and the configured wake phrase is absent. The transcript and auto-review reason remain in the sample metadata for auditing.
+New wake-trigger captures are transcribed locally with MLX Whisper. A normal wake trigger moves to `negative_samples/` only when STT returns text and the configured wake phrase is absent. By default, confirmed phrase matches stay in `Captured Audio` for review.
+
+Two optional cleanup rules are available:
+
+- `Delete confirmed good wakes` removes normal wake-trigger clips after STT confirms the configured phrase.
+- `Promote confirmed close misses` checks close misses that passed VAD and moves them to the personal positive samples only when STT confirms the configured phrase.
+
+A close miss that was blocked by VAD, has an empty transcript, or does not contain the configured phrase stays in `Captured Audio`; it is never turned into a negative automatically. Captures for another configured wake word also stay out of the automatic path. The transcript and auto-review reason remain in sample or Auto Training state metadata for auditing.
+
+Saving Auto Training settings also scans existing eligible captures. Enabling close-miss promotion reviews previous unreviewed close misses, while enabling cleanup removes previously confirmed good wakes without transcribing them a second time.
 
 The first automatic transcription downloads the configured MLX Whisper model into `auto_train_models/`. Scheduled training only starts after the configured number of new auto-reviewed negatives has accumulated. A successful automatic run asks Tater to re-push native satellite live settings; the current Tater Native firmware treats that settings generation as a forced refresh and downloads the updated model even though its JSON URL has not changed.
 
