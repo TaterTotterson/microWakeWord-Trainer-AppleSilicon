@@ -232,7 +232,7 @@ A close miss that was blocked by VAD, has an empty transcript, or does not conta
 
 Saving Auto Training settings also scans existing eligible captures. Enabling close-miss promotion reviews previous unreviewed close misses, while enabling cleanup removes previously confirmed good wakes without transcribing them a second time.
 
-The first automatic transcription downloads the configured MLX Whisper model into `auto_train_models/`. Scheduled training only starts after the configured number of new auto-reviewed negatives has accumulated. A successful automatic run asks Tater to re-push native satellite live settings; the current Tater Native firmware treats that settings generation as a forced refresh and downloads the updated model even though its JSON URL has not changed.
+The first automatic transcription downloads the configured MLX Whisper model into `auto_train_models/`. Scheduled training only starts after the configured number of new auto-reviewed negatives has accumulated. A successful automatic run asks Tater to re-fetch each connected satellite's current custom wake JSON profile and re-push its native live settings. The current Tater Native firmware treats that settings generation as a forced refresh and downloads the updated model even though its JSON URL has not changed.
 
 Use `Review inbox now`, `Train now`, and `Refresh satellites now` to run each stage manually while testing the setup.
 

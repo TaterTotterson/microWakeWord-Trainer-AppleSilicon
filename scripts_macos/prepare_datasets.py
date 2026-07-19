@@ -432,7 +432,8 @@ else:
 
     if not zipout.exists():
         print(f"⬇️ {zipname}")
-        rc = sh(f"wget -q -O '{zipout}' '{zipurl}'")
+        print("   Progress updates are shown about every 32 MiB.")
+        rc = sh(f"wget --progress=dot:giga -O '{zipout}' '{zipurl}'")
         if rc != 0:
             raise RuntimeError("wget failed for WHAM noise zip")
     extracted_wham_dir = wham_zip_dir / "wham_noise"
