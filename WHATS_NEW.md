@@ -1,2 +1,2 @@
-- Fixed automatic and manual satellite refresh so every connected satellite re-fetches its current custom wake JSON profile before reloading the model.
-- The large WHAM augmentation dataset download now reports visible progress in the training log.
+- Fixed macOS app updates so startup replaces a validated older trainer backend before syncing and launching the bundled source.
+- This prevents an updated app from silently reusing stale server code, ensuring satellite refresh improvements take effect immediately after updating.

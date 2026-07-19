@@ -86,13 +86,6 @@ private final class BackendManager {
             return
         }
 
-        if isWebReady() {
-            appendLog("WakeWord Trainer is already reachable at \(webURL.absoluteString)\n")
-            appendLauncherLog("Start requested; web UI is already ready.\n")
-            state = .running
-            return
-        }
-
         appendLauncherLog("Start requested.\n")
         state = .bootstrapping
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -100,6 +93,8 @@ private final class BackendManager {
             do {
                 self.appendLauncherLog("Ensuring private folders.\n")
                 try self.ensurePrivateFolders()
+                self.appendLauncherLog("Checking for an existing trainer backend.\n")
+                try self.stopExistingManagedBackend()
                 self.appendLauncherLog("Preparing bundled trainer source.\n")
                 try self.prepareSource()
                 self.appendLauncherLog("Ensuring Python runtime.\n")
@@ -155,18 +150,24 @@ private final class BackendManager {
     func recoverIfBackendMissing() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            if self.isWebReady() {
+            if self.isManagedProcessRunning(), self.isWebReady() {
                 if self.state != .running {
                     self.appendLauncherLog("Recovery found web UI ready; marking running.\n")
                     self.state = .running
                 }
                 return
             }
+            if self.isWebReady() {
+                // A backend not owned by this app instance is handled by the
+                // normal startup path, which validates its PID and working
+                // directory before replacing it.
+                return
+            }
             guard self.process == nil else {
                 return
             }
             switch self.state {
-            case .bootstrapping, .starting:
+            case .starting:
                 guard FileManager.default.fileExists(atPath: self.sourceRoot.appendingPathComponent("run.sh").path) else {
                     return
                 }
@@ -177,7 +178,7 @@ private final class BackendManager {
                     self.appendLauncherLog("Recovery launch failed: \(error.localizedDescription)\n")
                     self.state = .failed(error.localizedDescription)
                 }
-            case .stopped, .running, .failed:
+            case .stopped, .bootstrapping, .running, .failed:
                 return
             }
         }
@@ -596,6 +597,140 @@ private final class BackendManager {
     private func isManagedProcessRunning() -> Bool {
         guard let process else { return false }
         return process.isRunning
+    }
+
+    private func stopExistingManagedBackend() throws {
+        let listenerPIDs = try trainerListenerPIDs()
+        guard !listenerPIDs.isEmpty else {
+            return
+        }
+
+        let unmanagedPIDs = listenerPIDs.filter { !isWakeWordTrainerBackend(pid: $0) }
+        if !unmanagedPIDs.isEmpty {
+            let values = unmanagedPIDs.map(String.init).joined(separator: ", ")
+            throw LauncherError(
+                "Port \(trainerPort) is already in use by another process (PID \(values)). "
+                + "Stop that process or change the trainer port."
+            )
+        }
+
+        for pid in listenerPIDs {
+            appendLog("Stopping previous WakeWord Trainer backend (PID \(pid))...\n")
+            appendLauncherLog("Stopping validated existing backend pid \(pid).\n")
+            if Darwin.kill(pid, SIGTERM) != 0 && errno != ESRCH {
+                throw LauncherError("Could not stop previous WakeWord Trainer backend (PID \(pid)).")
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(10)
+        var remaining = Set(listenerPIDs)
+        while Date() < deadline {
+            remaining = Set(try trainerListenerPIDs()).intersection(listenerPIDs)
+            if remaining.isEmpty {
+                appendLauncherLog("Previous backend stopped cleanly.\n")
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+
+        for pid in remaining {
+            guard isWakeWordTrainerBackend(pid: pid) else {
+                throw LauncherError(
+                    "The process using port \(trainerPort) changed while restarting the trainer."
+                )
+            }
+            appendLauncherLog("Previous backend pid \(pid) did not exit; sending SIGKILL.\n")
+            if Darwin.kill(pid, SIGKILL) != 0 && errno != ESRCH {
+                throw LauncherError("Could not terminate previous WakeWord Trainer backend (PID \(pid)).")
+            }
+        }
+
+        let forceDeadline = Date().addingTimeInterval(3)
+        while Date() < forceDeadline {
+            let active = Set(try trainerListenerPIDs()).intersection(listenerPIDs)
+            if active.isEmpty {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        throw LauncherError("Previous WakeWord Trainer backend did not release port \(trainerPort).")
+    }
+
+    private func trainerListenerPIDs() throws -> [pid_t] {
+        let result = try capturedProcessOutput(
+            executable: "/usr/sbin/lsof",
+            arguments: ["-nP", "-tiTCP:\(trainerPort)", "-sTCP:LISTEN"]
+        )
+        guard result.status == 0 else {
+            return []
+        }
+        return Array(
+            Set(
+                result.output
+                    .split(whereSeparator: \.isNewline)
+                    .compactMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                    .filter { $0 > 0 }
+            )
+        ).sorted()
+    }
+
+    private func isWakeWordTrainerBackend(pid: pid_t) -> Bool {
+        guard
+            let command = try? capturedProcessOutput(
+                executable: "/bin/ps",
+                arguments: ["-p", "\(pid)", "-o", "command="]
+            ),
+            command.status == 0,
+            command.output.contains("uvicorn"),
+            command.output.contains("trainer_server:app"),
+            let workingDirectory = processWorkingDirectory(pid: pid)
+        else {
+            return false
+        }
+
+        let actual = URL(fileURLWithPath: workingDirectory)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        let expected = sourceRoot
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        return actual == expected
+    }
+
+    private func processWorkingDirectory(pid: pid_t) -> String? {
+        guard
+            let result = try? capturedProcessOutput(
+                executable: "/usr/sbin/lsof",
+                arguments: ["-a", "-p", "\(pid)", "-d", "cwd", "-Fn"]
+            ),
+            result.status == 0
+        else {
+            return nil
+        }
+        return result.output
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first(where: { $0.hasPrefix("n") })?
+            .dropFirst()
+            .description
+    }
+
+    private func capturedProcessOutput(
+        executable: String,
+        arguments: [String]
+    ) throws -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
     private func waitForWebReady(timeout: TimeInterval) -> Bool {
