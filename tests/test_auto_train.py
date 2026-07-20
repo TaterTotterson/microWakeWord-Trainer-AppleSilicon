@@ -41,12 +41,14 @@ class AutoTrainTests(unittest.TestCase):
             trainer.PERSONAL_DIR,
             trainer.AUTO_TRAIN_CONFIG_FILE,
             trainer.AUTO_TRAIN_STATE_FILE,
+            trainer.TRAINING_LOCK_FILE,
         )
         trainer.CAPTURED_DIR = root / "captured_audio"
         trainer.NEGATIVE_DIR = root / "negative_samples"
         trainer.PERSONAL_DIR = root / "personal_samples"
         trainer.AUTO_TRAIN_CONFIG_FILE = root / "auto_train_config.json"
         trainer.AUTO_TRAIN_STATE_FILE = root / "auto_train_state.json"
+        trainer.TRAINING_LOCK_FILE = root / "training.lock"
         for directory in (trainer.CAPTURED_DIR, trainer.NEGATIVE_DIR, trainer.PERSONAL_DIR):
             directory.mkdir(parents=True)
 
@@ -73,6 +75,7 @@ class AutoTrainTests(unittest.TestCase):
             trainer.PERSONAL_DIR,
             trainer.AUTO_TRAIN_CONFIG_FILE,
             trainer.AUTO_TRAIN_STATE_FILE,
+            trainer.TRAINING_LOCK_FILE,
         ) = self.original_paths
         trainer.AUTO_TRAIN_CONFIG.clear()
         trainer.AUTO_TRAIN_CONFIG.update(self.original_config)
@@ -237,6 +240,34 @@ class AutoTrainTests(unittest.TestCase):
 
         start.assert_called_once_with()
         self.assertTrue(trainer.AUTO_TRAIN_STATE["next_run_at"])
+
+    def test_training_lock_blocks_another_process_until_released(self):
+        first_lock = trainer._try_acquire_training_run_lock()
+        self.assertIsNotNone(first_lock)
+        try:
+            self.assertIsNone(trainer._try_acquire_training_run_lock())
+        finally:
+            trainer._release_training_run_lock(first_lock)
+
+        next_lock = trainer._try_acquire_training_run_lock()
+        self.assertIsNotNone(next_lock)
+        trainer._release_training_run_lock(next_lock)
+
+    def test_auto_training_does_not_start_when_cross_process_lock_is_held(self):
+        with trainer.STATE_LOCK:
+            original_running = trainer.STATE["training"]["running"]
+            trainer.STATE["training"]["running"] = False
+        existing_lock = trainer._try_acquire_training_run_lock()
+        self.assertIsNotNone(existing_lock)
+        try:
+            result = trainer._start_auto_training()
+        finally:
+            trainer._release_training_run_lock(existing_lock)
+            with trainer.STATE_LOCK:
+                trainer.STATE["training"]["running"] = original_running
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "TRAINING_LOCKED")
 
     def test_tater_refresh_repushes_settings_with_selector_and_token(self):
         trainer.AUTO_TRAIN_CONFIG.update(

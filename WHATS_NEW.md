@@ -1,2 +1,3 @@
-- Fixed macOS app updates so startup replaces a validated older trainer backend before syncing and launching the bundled source.
-- This prevents an updated app from silently reusing stale server code, ensuring satellite refresh improvements take effect immediately after updating.
+- macOS startup now finds every validated trainer backend process, including orphans that already released port 8789, and waits for the actual process to exit before launching the updated backend.
+- Lingering validated trainer processes are force-stopped after a grace period, while unrelated processes remain protected.
+- Added a cross-process training lock so duplicate backends cannot run training against the same Python environment concurrently.

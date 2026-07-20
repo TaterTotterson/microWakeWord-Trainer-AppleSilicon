@@ -2,6 +2,7 @@
 
 # trainer_server.py
 import contextlib
+import fcntl
 import io
 import os
 import queue
@@ -39,6 +40,12 @@ TRAINED_WAKE_WORDS_DIR = ROOT_DIR / "trained_wake_words"
 AUTO_TRAIN_CONFIG_FILE = ROOT_DIR / "auto_train_config.json"
 AUTO_TRAIN_STATE_FILE = ROOT_DIR / "auto_train_state.json"
 AUTO_TRAIN_MODEL_DIR = ROOT_DIR / "auto_train_models"
+TRAINING_LOCK_FILE = Path(
+    os.environ.get(
+        "WAKEWORD_TRAINER_TRAINING_LOCK_FILE",
+        str(ROOT_DIR / ".training.lock"),
+    )
+).resolve()
 TRAIN_SCRIPT = os.environ.get("TRAIN_SCRIPT", str(ROOT_DIR / "train_microwakeword_macos.sh"))
 PIPER_ROOT = ROOT_DIR / "piper-sample-generator"
 PIPER_VOICES_DIR = PIPER_ROOT / "voices"
@@ -925,6 +932,43 @@ def _notify_tater_satellites() -> Dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
+def _try_acquire_training_run_lock():
+    TRAINING_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = TRAINING_LOCK_FILE.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        return None
+
+    try:
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "started_at": _iso_now(),
+                }
+            )
+            + "\n"
+        )
+        lock_file.flush()
+    except Exception:
+        _release_training_run_lock(lock_file)
+        raise
+    return lock_file
+
+
+def _release_training_run_lock(lock_file) -> None:
+    if lock_file is None:
+        return
+    with contextlib.suppress(Exception):
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    with contextlib.suppress(Exception):
+        lock_file.close()
+
+
 def _start_auto_training() -> Dict[str, Any]:
     with AUTO_TRAIN_LOCK:
         config = dict(AUTO_TRAIN_CONFIG)
@@ -939,19 +983,39 @@ def _start_auto_training() -> Dict[str, Any]:
     with STATE_LOCK:
         if STATE["training"]["running"]:
             return {"ok": False, "error": "Training already running."}
+        try:
+            training_lock = _try_acquire_training_run_lock()
+        except Exception as exc:
+            return {"ok": False, "error": f"Could not acquire the training lock: {exc}"}
+        if training_lock is None:
+            return {
+                "ok": False,
+                "error": "Training is already running in another trainer process.",
+                "code": "TRAINING_LOCKED",
+            }
         STATE["raw_phrase"] = wake_phrase
         STATE["safe_word"] = safe_word
         STATE["language"] = language
         STATE["training"]["running"] = True
-    with AUTO_TRAIN_LOCK:
-        AUTO_TRAIN_STATE["last_train_started_at"] = _iso_now()
-        AUTO_TRAIN_RUNTIME["training_pending_consumed"] = int(AUTO_TRAIN_STATE.get("pending_negative_count") or 0)
-        _save_auto_train_state_locked()
-    threading.Thread(
-        target=_run_training_background,
-        args=(safe_word, language, True),
-        daemon=True,
-    ).start()
+    try:
+        with AUTO_TRAIN_LOCK:
+            AUTO_TRAIN_STATE["last_train_started_at"] = _iso_now()
+            AUTO_TRAIN_RUNTIME["training_pending_consumed"] = int(
+                AUTO_TRAIN_STATE.get("pending_negative_count") or 0
+            )
+            _save_auto_train_state_locked()
+        threading.Thread(
+            target=_run_training_background,
+            args=(safe_word, language, True, training_lock),
+            daemon=True,
+        ).start()
+    except Exception as exc:
+        with STATE_LOCK:
+            STATE["training"]["running"] = False
+        with AUTO_TRAIN_LOCK:
+            AUTO_TRAIN_RUNTIME["training_pending_consumed"] = 0
+        _release_training_run_lock(training_lock)
+        return {"ok": False, "error": f"Could not start training: {exc}"}
     return {"ok": True, "started": True, "safe_word": safe_word, "language": language}
 
 
@@ -1827,7 +1891,12 @@ def _append_train_log(line: str):
             del buf[: len(buf) - 250]
 
 
-def _run_training_background(safe_word: str, language: str, auto_run: bool = False):
+def _run_training_background(
+    safe_word: str,
+    language: str,
+    auto_run: bool = False,
+    training_lock=None,
+):
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
     cmd = ["bash", TRAIN_SCRIPT, safe_word]
     rc = 999
@@ -1858,6 +1927,7 @@ def _run_training_background(safe_word: str, language: str, auto_run: bool = Fal
                 text=True,
                 bufsize=1,
                 env=env,
+                pass_fds=(training_lock.fileno(),) if training_lock is not None else (),
             )
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -1876,34 +1946,35 @@ def _run_training_background(safe_word: str, language: str, auto_run: bool = Fal
         with STATE_LOCK:
             STATE["training"]["exit_code"] = 999
 
+    try:
+        if auto_run:
+            with AUTO_TRAIN_LOCK:
+                AUTO_TRAIN_STATE["last_train_finished_at"] = _iso_now()
+                AUTO_TRAIN_STATE["last_train_exit_code"] = rc
+                if rc == 0:
+                    consumed = int(AUTO_TRAIN_RUNTIME.get("training_pending_consumed") or 0)
+                    AUTO_TRAIN_STATE["pending_negative_count"] = max(
+                        0,
+                        int(AUTO_TRAIN_STATE.get("pending_negative_count") or 0) - consumed,
+                    )
+                AUTO_TRAIN_RUNTIME["training_pending_consumed"] = 0
+                _save_auto_train_state_locked()
+            if rc == 0:
+                _append_train_log("→ Asking Tater to refresh the active wake model on connected satellites")
+                notify_result = _notify_tater_satellites()
+                if notify_result.get("ok"):
+                    if notify_result.get("skipped"):
+                        _append_train_log("→ Satellite refresh skipped (disabled in Auto Training)")
+                    else:
+                        count = notify_result.get("count")
+                        suffix = f" ({count} connected)" if count is not None else ""
+                        _append_train_log(f"✓ Tater satellite refresh requested{suffix}")
+                else:
+                    _append_train_log(f"✗ Tater satellite refresh failed: {notify_result.get('error')}")
     finally:
         with STATE_LOCK:
             STATE["training"]["running"] = False
-
-    if auto_run:
-        with AUTO_TRAIN_LOCK:
-            AUTO_TRAIN_STATE["last_train_finished_at"] = _iso_now()
-            AUTO_TRAIN_STATE["last_train_exit_code"] = rc
-            if rc == 0:
-                consumed = int(AUTO_TRAIN_RUNTIME.get("training_pending_consumed") or 0)
-                AUTO_TRAIN_STATE["pending_negative_count"] = max(
-                    0,
-                    int(AUTO_TRAIN_STATE.get("pending_negative_count") or 0) - consumed,
-                )
-            AUTO_TRAIN_RUNTIME["training_pending_consumed"] = 0
-            _save_auto_train_state_locked()
-        if rc == 0:
-            _append_train_log("→ Asking Tater to refresh the active wake model on connected satellites")
-            notify_result = _notify_tater_satellites()
-            if notify_result.get("ok"):
-                if notify_result.get("skipped"):
-                    _append_train_log("→ Satellite refresh skipped (disabled in Auto Training)")
-                else:
-                    count = notify_result.get("count")
-                    suffix = f" ({count} connected)" if count is not None else ""
-                    _append_train_log(f"✓ Tater satellite refresh requested{suffix}")
-            else:
-                _append_train_log(f"✗ Tater satellite refresh failed: {notify_result.get('error')}")
+        _release_training_run_lock(training_lock)
 
 
 # -------------------- Routes --------------------
@@ -2570,9 +2641,37 @@ def train_now(payload: Dict[str, Any] = None):
         return JSONResponse({"ok": False, "error": f"TRAIN_SCRIPT not found: {TRAIN_SCRIPT}"}, status_code=500)
 
     with STATE_LOCK:
+        if STATE["training"]["running"]:
+            return JSONResponse({"ok": False, "error": "Training already running"}, status_code=400)
+        try:
+            training_lock = _try_acquire_training_run_lock()
+        except Exception as exc:
+            return JSONResponse(
+                {"ok": False, "error": f"Could not acquire the training lock: {exc}"},
+                status_code=500,
+            )
+        if training_lock is None:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Training is already running in another trainer process.",
+                    "code": "TRAINING_LOCKED",
+                },
+                status_code=409,
+            )
         STATE["training"]["running"] = True
-    t = threading.Thread(target=_run_training_background, args=(safe_word, language, False), daemon=True)
-    t.start()
+    try:
+        t = threading.Thread(
+            target=_run_training_background,
+            args=(safe_word, language, False, training_lock),
+            daemon=True,
+        )
+        t.start()
+    except Exception as exc:
+        with STATE_LOCK:
+            STATE["training"]["running"] = False
+        _release_training_run_lock(training_lock)
+        return JSONResponse({"ok": False, "error": f"Could not start training: {exc}"}, status_code=500)
 
     return {
         "ok": True,

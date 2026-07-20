@@ -526,6 +526,9 @@ private final class BackendManager {
         environment["REC_HOST"] = "0.0.0.0"
         environment["REC_PORT"] = "\(trainerPort)"
         environment["WAKEWORD_TRAINER_SUPPORT_DIR"] = supportRoot.path
+        environment["WAKEWORD_TRAINER_TRAINING_LOCK_FILE"] = supportRoot
+            .appendingPathComponent("training.lock")
+            .path
         return environment
     }
 
@@ -601,11 +604,9 @@ private final class BackendManager {
 
     private func stopExistingManagedBackend() throws {
         let listenerPIDs = try trainerListenerPIDs()
-        guard !listenerPIDs.isEmpty else {
-            return
-        }
-
-        let unmanagedPIDs = listenerPIDs.filter { !isWakeWordTrainerBackend(pid: $0) }
+        let managedPIDs = try trainerBackendPIDs()
+        let managedPIDSet = Set(managedPIDs)
+        let unmanagedPIDs = listenerPIDs.filter { !managedPIDSet.contains($0) }
         if !unmanagedPIDs.isEmpty {
             let values = unmanagedPIDs.map(String.init).joined(separator: ", ")
             throw LauncherError(
@@ -614,7 +615,20 @@ private final class BackendManager {
             )
         }
 
-        for pid in listenerPIDs {
+        let backendPIDs = Array(managedPIDSet.union(listenerPIDs)).sorted()
+        guard !backendPIDs.isEmpty else {
+            return
+        }
+
+        for pid in backendPIDs {
+            guard isWakeWordTrainerBackend(pid: pid) else {
+                if processExists(pid: pid) {
+                    throw LauncherError(
+                        "A trainer process changed while preparing to restart it (PID \(pid))."
+                    )
+                }
+                continue
+            }
             appendLog("Stopping previous WakeWord Trainer backend (PID \(pid))...\n")
             appendLauncherLog("Stopping validated existing backend pid \(pid).\n")
             if Darwin.kill(pid, SIGTERM) != 0 && errno != ESRCH {
@@ -623,9 +637,9 @@ private final class BackendManager {
         }
 
         let deadline = Date().addingTimeInterval(10)
-        var remaining = Set(listenerPIDs)
+        var remaining = Set(backendPIDs.filter { processExists(pid: $0) })
         while Date() < deadline {
-            remaining = Set(try trainerListenerPIDs()).intersection(listenerPIDs)
+            remaining = Set(backendPIDs.filter { processExists(pid: $0) })
             if remaining.isEmpty {
                 appendLauncherLog("Previous backend stopped cleanly.\n")
                 return
@@ -647,13 +661,47 @@ private final class BackendManager {
 
         let forceDeadline = Date().addingTimeInterval(3)
         while Date() < forceDeadline {
-            let active = Set(try trainerListenerPIDs()).intersection(listenerPIDs)
+            let active = Set(backendPIDs.filter { processExists(pid: $0) })
             if active.isEmpty {
                 return
             }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        throw LauncherError("Previous WakeWord Trainer backend did not release port \(trainerPort).")
+        throw LauncherError("Previous WakeWord Trainer backend did not exit.")
+    }
+
+    private func trainerBackendPIDs() throws -> [pid_t] {
+        let result = try capturedProcessOutput(
+            executable: "/bin/ps",
+            arguments: ["-axo", "pid=,command="]
+        )
+        guard result.status == 0 else {
+            throw LauncherError("Could not inspect existing trainer processes.")
+        }
+
+        var matches: Set<pid_t> = []
+        for rawLine in result.output.split(whereSeparator: \.isNewline) {
+            let fields = rawLine.split(
+                maxSplits: 1,
+                omittingEmptySubsequences: true,
+                whereSeparator: \.isWhitespace
+            )
+            guard
+                fields.count == 2,
+                let pid = pid_t(fields[0]),
+                pid > 0
+            else {
+                continue
+            }
+            let command = String(fields[1])
+            guard command.contains("uvicorn"), command.contains("trainer_server:app") else {
+                continue
+            }
+            if isWakeWordTrainerBackend(pid: pid) {
+                matches.insert(pid)
+            }
+        }
+        return matches.sorted()
     }
 
     private func trainerListenerPIDs() throws -> [pid_t] {
@@ -672,6 +720,13 @@ private final class BackendManager {
                     .filter { $0 > 0 }
             )
         ).sorted()
+    }
+
+    private func processExists(pid: pid_t) -> Bool {
+        if Darwin.kill(pid, 0) == 0 {
+            return true
+        }
+        return errno == EPERM
     }
 
     private func isWakeWordTrainerBackend(pid: pid_t) -> Bool {
