@@ -50,6 +50,8 @@ private final class BackendManager {
     private var logHandle: FileHandle?
     private var outputPipe: Pipe?
     private var selectedPythonPath: String?
+    private let gracefulStopTimeout: TimeInterval = 35
+    private let descendantExitGrace: TimeInterval = 3
 
     private(set) var state: BackendState = .stopped {
         didSet {
@@ -109,38 +111,170 @@ private final class BackendManager {
     }
 
     func restart() {
-        stop()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.start()
+        appendLauncherLog("Restart requested.\n")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            self.stop(waitForExit: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.start()
+            }
         }
     }
 
     func stop(waitForExit: Bool = false) {
-        guard let process else {
+        if !waitForExit {
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                self?.stop(waitForExit: true)
+            }
+            return
+        }
+
+        if let process, process.isRunning {
+            let pid = process.processIdentifier
+            let descendants = descendantProcessIDs(of: pid)
+            appendLauncherLog("Stop requested for managed backend pid \(pid).\n")
+            if Darwin.kill(pid, SIGTERM) != 0 {
+                appendLauncherLog(
+                    "Failed to send SIGTERM to managed backend pid \(pid): errno \(errno).\n"
+                )
+            }
+            waitForManagedProcessExit(
+                process,
+                descendants: descendants,
+                timeout: gracefulStopTimeout
+            )
+            closeLogHandle()
+            self.process = nil
             state = .stopped
             return
         }
 
-        if process.isRunning {
-            process.terminate()
-            if waitForExit {
-                let deadline = Date().addingTimeInterval(12)
-                while process.isRunning && Date() < deadline {
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                if process.isRunning {
-                    Darwin.kill(process.processIdentifier, SIGKILL)
-                }
-                process.waitUntilExit()
-            } else {
-                DispatchQueue.global(qos: .utility).async {
-                    process.waitUntilExit()
-                }
-            }
+        let listenerPIDs = (try? trainerListenerPIDs()) ?? []
+        let backendPIDs = (try? trainerBackendPIDs()) ?? []
+        let discoveredPIDs = Array(Set(listenerPIDs + backendPIDs))
+            .filter { isWakeWordTrainerBackend(pid: $0) }
+            .sorted()
+        for pid in discoveredPIDs {
+            appendLauncherLog("Stop requested for discovered backend pid \(pid).\n")
+            terminateBackendProcessNow(pid: pid)
+        }
+
+        if let process, !process.isRunning {
+            process.waitUntilExit()
         }
         closeLogHandle()
         self.process = nil
         state = .stopped
+    }
+
+    private func waitForManagedProcessExit(
+        _ process: Process,
+        descendants: [pid_t],
+        timeout: TimeInterval
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        if process.isRunning {
+            appendLauncherLog("Managed backend pid \(process.processIdentifier) did not exit; sending SIGKILL.\n")
+            Darwin.kill(process.processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
+        terminateCapturedDescendants(descendants, naturalExitGrace: descendantExitGrace)
+    }
+
+    private func terminateBackendProcessNow(pid: pid_t) {
+        let descendants = descendantProcessIDs(of: pid)
+        if processExists(pid: pid) {
+            Darwin.kill(pid, SIGTERM)
+        }
+        if !waitForProcessExit(pid, timeout: gracefulStopTimeout) {
+            appendLauncherLog("Discovered backend pid \(pid) did not exit; sending SIGKILL.\n")
+            Darwin.kill(pid, SIGKILL)
+            _ = waitForProcessExit(pid, timeout: 2)
+        }
+        terminateCapturedDescendants(descendants, naturalExitGrace: descendantExitGrace)
+    }
+
+    private func terminateCapturedDescendants(
+        _ pids: [pid_t],
+        naturalExitGrace: TimeInterval = 0
+    ) {
+        var remaining = pids.filter { processExists(pid: $0) }
+        if !remaining.isEmpty && naturalExitGrace > 0 {
+            let deadline = Date().addingTimeInterval(naturalExitGrace)
+            while !remaining.isEmpty && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.1)
+                remaining = remaining.filter { processExists(pid: $0) }
+            }
+        }
+        guard !remaining.isEmpty else { return }
+        appendLauncherLog(
+            "Cleaning up \(remaining.count) trainer descendant process(es): "
+                + remaining.map(String.init).joined(separator: ", ")
+                + ".\n"
+        )
+        for pid in remaining {
+            Darwin.kill(pid, SIGTERM)
+        }
+        let termDeadline = Date().addingTimeInterval(3)
+        while remaining.contains(where: { processExists(pid: $0) }) && Date() < termDeadline {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        let stubborn = remaining.filter { processExists(pid: $0) }
+        for pid in stubborn {
+            Darwin.kill(pid, SIGKILL)
+        }
+        if !stubborn.isEmpty {
+            appendLauncherLog(
+                "Forced \(stubborn.count) trainer descendant process(es) to exit: "
+                    + stubborn.map(String.init).joined(separator: ", ")
+                    + ".\n"
+            )
+        }
+    }
+
+    private func waitForProcessExit(_ pid: pid_t, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while processExists(pid: pid) && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return !processExists(pid: pid)
+    }
+
+    private func descendantProcessIDs(of rootPID: pid_t) -> [pid_t] {
+        guard
+            let result = try? capturedProcessOutput(
+                executable: "/bin/ps",
+                arguments: ["-axo", "pid=,ppid="]
+            ),
+            result.status == 0
+        else {
+            return []
+        }
+
+        var childrenByParent: [pid_t: [pid_t]] = [:]
+        for line in result.output.split(whereSeparator: \.isNewline) {
+            let parts = line.split(whereSeparator: \.isWhitespace)
+            guard
+                parts.count >= 2,
+                let pid = pid_t(parts[0]),
+                let parent = pid_t(parts[1]),
+                pid != getpid()
+            else {
+                continue
+            }
+            childrenByParent[parent, default: []].append(pid)
+        }
+
+        var descendants: [pid_t] = []
+        var stack = childrenByParent[rootPID] ?? []
+        while let pid = stack.popLast() {
+            descendants.append(pid)
+            stack.append(contentsOf: childrenByParent[pid] ?? [])
+        }
+        return descendants
     }
 
     func openLogsFolder() {
@@ -619,6 +753,9 @@ private final class BackendManager {
         guard !backendPIDs.isEmpty else {
             return
         }
+        let capturedDescendants = Array(
+            Set(backendPIDs.flatMap { descendantProcessIDs(of: $0) })
+        ).sorted()
 
         for pid in backendPIDs {
             guard isWakeWordTrainerBackend(pid: pid) else {
@@ -642,6 +779,10 @@ private final class BackendManager {
             remaining = Set(backendPIDs.filter { processExists(pid: $0) })
             if remaining.isEmpty {
                 appendLauncherLog("Previous backend stopped cleanly.\n")
+                terminateCapturedDescendants(
+                    capturedDescendants,
+                    naturalExitGrace: descendantExitGrace
+                )
                 return
             }
             Thread.sleep(forTimeInterval: 0.2)
@@ -663,10 +804,15 @@ private final class BackendManager {
         while Date() < forceDeadline {
             let active = Set(backendPIDs.filter { processExists(pid: $0) })
             if active.isEmpty {
+                terminateCapturedDescendants(
+                    capturedDescendants,
+                    naturalExitGrace: descendantExitGrace
+                )
                 return
             }
             Thread.sleep(forTimeInterval: 0.1)
         }
+        terminateCapturedDescendants(capturedDescendants, naturalExitGrace: descendantExitGrace)
         throw LauncherError("Previous WakeWord Trainer backend did not exit.")
     }
 
@@ -1589,6 +1735,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recoveryTimer: Timer?
     private var updateMenuResetTimer: Timer?
     private var updateCheckTimer: Timer?
+    private var terminationInProgress = false
     private let automaticUpdateInterval: TimeInterval = 12 * 60 * 60
     private let lastAutomaticUpdateCheckKey = "LastAutomaticUpdateCheck"
 
@@ -1618,11 +1765,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationInProgress {
+            return .terminateLater
+        }
+        terminationInProgress = true
         recoveryTimer?.invalidate()
         updateCheckTimer?.invalidate()
         updateMenuResetTimer?.invalidate()
-        backend.stop(waitForExit: true)
-        return .terminateNow
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak sender] in
+            self?.backend.stop(waitForExit: true)
+            DispatchQueue.main.async {
+                sender?.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
     }
 
     private func startRecoveryWatchdog() {

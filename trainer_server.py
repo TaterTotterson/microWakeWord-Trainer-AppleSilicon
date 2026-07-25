@@ -8,6 +8,8 @@ import os
 import queue
 import re
 import json
+import secrets
+import signal
 import socket
 import shutil
 import subprocess
@@ -23,6 +25,7 @@ from math import isfinite, log10
 from pathlib import Path
 from typing import Dict, Any, List, Callable
 from urllib.parse import quote
+from urllib.error import HTTPError
 from urllib.request import Request as URLRequest, urlopen
 
 from fastapi import FastAPI, UploadFile, File, Form, Header, Request
@@ -30,16 +33,25 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT_DIR = Path(__file__).resolve().parent
-STATIC_DIR = ROOT_DIR / "static"
-PERSONAL_DIR = ROOT_DIR / "personal_samples"
-CAPTURED_DIR = ROOT_DIR / "captured_audio"
-NEGATIVE_DIR = ROOT_DIR / "negative_samples"
-TRIM_HISTORY_DIR = ROOT_DIR / "trim_history"
+DATA_DIR = Path(os.environ.get("WAKEWORD_TRAINER_DATA_DIR", str(ROOT_DIR))).resolve()
+STATIC_DIR = Path(os.environ.get("STATIC_DIR", str(ROOT_DIR / "static"))).resolve()
+PERSONAL_DIR = Path(os.environ.get("PERSONAL_DIR", str(DATA_DIR / "personal_samples"))).resolve()
+CAPTURED_DIR = Path(os.environ.get("CAPTURED_DIR", str(DATA_DIR / "captured_audio"))).resolve()
+NEGATIVE_DIR = Path(os.environ.get("NEGATIVE_DIR", str(DATA_DIR / "negative_samples"))).resolve()
+TRIM_HISTORY_DIR = Path(os.environ.get("TRIM_HISTORY_DIR", str(DATA_DIR / "trim_history"))).resolve()
 TRIM_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-TRAINED_WAKE_WORDS_DIR = ROOT_DIR / "trained_wake_words"
-AUTO_TRAIN_CONFIG_FILE = ROOT_DIR / "auto_train_config.json"
-AUTO_TRAIN_STATE_FILE = ROOT_DIR / "auto_train_state.json"
-AUTO_TRAIN_MODEL_DIR = ROOT_DIR / "auto_train_models"
+TRAINED_WAKE_WORDS_DIR = Path(
+    os.environ.get("TRAINED_WAKE_WORDS_DIR", str(DATA_DIR / "trained_wake_words"))
+).resolve()
+AUTO_TRAIN_CONFIG_FILE = Path(
+    os.environ.get("AUTO_TRAIN_CONFIG_FILE", str(DATA_DIR / "auto_train_config.json"))
+).resolve()
+AUTO_TRAIN_STATE_FILE = Path(
+    os.environ.get("AUTO_TRAIN_STATE_FILE", str(DATA_DIR / "auto_train_state.json"))
+).resolve()
+AUTO_TRAIN_MODEL_DIR = Path(
+    os.environ.get("AUTO_TRAIN_MODEL_DIR", str(DATA_DIR / "auto_train_models"))
+).resolve()
 TRAINING_LOCK_FILE = Path(
     os.environ.get(
         "WAKEWORD_TRAINER_TRAINING_LOCK_FILE",
@@ -47,7 +59,7 @@ TRAINING_LOCK_FILE = Path(
     )
 ).resolve()
 TRAIN_SCRIPT = os.environ.get("TRAIN_SCRIPT", str(ROOT_DIR / "train_microwakeword_macos.sh"))
-PIPER_ROOT = ROOT_DIR / "piper-sample-generator"
+PIPER_ROOT = DATA_DIR / "piper-sample-generator"
 PIPER_VOICES_DIR = PIPER_ROOT / "voices"
 PIPER_VOICES_INDEX_URL = os.environ.get(
     "PIPER_VOICES_INDEX_URL",
@@ -89,8 +101,10 @@ AUTO_TRAIN_DEFAULT_CONFIG: Dict[str, Any] = {
     "minimum_new_negatives": 3,
     "advertised_base_url": "",
     "tater_url": "http://127.0.0.1:8501",
-    "tater_selector": "",
-    "tater_api_token": "",
+    "tater_link_token": "",
+    "tater_link_id": "",
+    "tater_linked_at": "",
+    "tater_link_tater_name": "",
     "notify_satellites": True,
 }
 
@@ -157,6 +171,10 @@ AUTO_TRAIN_STOP_EVENT = threading.Event()
 AUTO_TRAIN_REVIEW_QUEUE: queue.Queue[str] = queue.Queue()
 AUTO_TRAIN_QUEUED_FILES: set[str] = set()
 AUTO_TRAIN_WORKER: threading.Thread | None = None
+TRAINING_RUNTIME_LOCK = threading.RLock()
+TRAINING_SHUTDOWN_EVENT = threading.Event()
+TRAINING_PROCESS: subprocess.Popen | None = None
+TRAINING_THREAD: threading.Thread | None = None
 AUTO_TRAIN_RUNTIME: Dict[str, Any] = {
     "review_running": False,
     "review_file": "",
@@ -426,8 +444,10 @@ def _normalize_auto_train_config(values: Dict[str, Any] | None, *, base: Dict[st
         "minimum_new_negatives": _bounded_int(source.get("minimum_new_negatives"), 3, 1, 10000),
         "advertised_base_url": _normalize_http_base_url(source.get("advertised_base_url")),
         "tater_url": _normalize_http_base_url(source.get("tater_url"), allow_empty=False),
-        "tater_selector": str(source.get("tater_selector") or "").strip(),
-        "tater_api_token": str(source.get("tater_api_token") or "").strip(),
+        "tater_link_token": str(source.get("tater_link_token") or "").strip(),
+        "tater_link_id": str(source.get("tater_link_id") or "").strip(),
+        "tater_linked_at": str(source.get("tater_linked_at") or "").strip(),
+        "tater_link_tater_name": str(source.get("tater_link_tater_name") or "").strip(),
         "notify_satellites": _config_bool(source.get("notify_satellites"), True),
     }
 
@@ -478,8 +498,11 @@ def _schedule_next_auto_run_locked(*, from_time: datetime | None = None) -> None
 
 def _public_auto_train_config() -> Dict[str, Any]:
     with AUTO_TRAIN_LOCK:
-        config = {key: value for key, value in AUTO_TRAIN_CONFIG.items() if key != "tater_api_token"}
-        config["tater_api_token_configured"] = bool(AUTO_TRAIN_CONFIG.get("tater_api_token"))
+        config = {key: value for key, value in AUTO_TRAIN_CONFIG.items() if key != "tater_link_token"}
+        config["tater_linked"] = bool(
+            AUTO_TRAIN_CONFIG.get("tater_link_token")
+            and AUTO_TRAIN_CONFIG.get("tater_link_id")
+        )
         return config
 
 
@@ -490,6 +513,7 @@ def _auto_train_status_payload() -> Dict[str, Any]:
             "state": dict(AUTO_TRAIN_STATE),
             "runtime": dict(AUTO_TRAIN_RUNTIME),
             "advertised_base_url": _advertised_base_url(),
+            "trainer_link": _tater_link_public_status(),
         }
 
 
@@ -569,6 +593,115 @@ def _advertised_base_url(request: Request | None = None) -> str:
         port = _bounded_int(os.environ.get("REC_PORT"), 8789, 1, 65535)
     default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
     return f"{scheme}://{host}{'' if default_port else f':{port}'}"
+
+
+def _tater_link_public_status() -> Dict[str, Any]:
+    with AUTO_TRAIN_LOCK:
+        return {
+            "linked": bool(
+                AUTO_TRAIN_CONFIG.get("tater_link_token")
+                and AUTO_TRAIN_CONFIG.get("tater_link_id")
+            ),
+            "trainer_id": str(AUTO_TRAIN_CONFIG.get("tater_link_id") or "").strip(),
+            "linked_at": str(AUTO_TRAIN_CONFIG.get("tater_linked_at") or "").strip(),
+            "tater_name": str(AUTO_TRAIN_CONFIG.get("tater_link_tater_name") or "").strip(),
+        }
+
+
+def _claim_tater_link(tater_url: Any, pairing_code: Any) -> Dict[str, Any]:
+    base_url = _normalize_http_base_url(tater_url, allow_empty=False)
+    code = "".join(ch for ch in str(pairing_code or "").upper() if ch.isalnum())
+    if len(code) != 8:
+        raise ValueError("Enter the complete pairing code shown by Tater.")
+    publish_base_url = _normalize_http_base_url(_advertised_base_url(), allow_empty=False)
+    with AUTO_TRAIN_LOCK:
+        trainer_id = str(AUTO_TRAIN_CONFIG.get("tater_link_id") or "").strip() or secrets.token_hex(12)
+
+    request = URLRequest(
+        f"{base_url}/api/tater/satellite/v1/trainer/link/claim",
+        data=json.dumps(
+            {
+                "pairing_code": code,
+                "trainer_id": trainer_id,
+                "trainer_name": "Wake Word Trainer",
+                "trainer_url": publish_base_url,
+                "publish_base_url": publish_base_url,
+            }
+        ).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "microWakeWord-Trainer/tater-link",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read(64 * 1024).decode("utf-8"))
+    except HTTPError as exc:
+        detail = ""
+        with contextlib.suppress(Exception):
+            error_payload = json.loads(exc.read(64 * 1024).decode("utf-8"))
+            if isinstance(error_payload, dict):
+                detail = str(error_payload.get("detail") or error_payload.get("error") or "").strip()
+        raise ValueError(detail or f"Tater rejected the pairing code (HTTP {exc.code}).") from exc
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not reach Tater: {exc}") from exc
+
+    if not isinstance(payload, dict) or not bool(payload.get("ok")):
+        raise ValueError(str((payload or {}).get("error") or "Tater pairing failed."))
+    link_token = str(payload.get("token") or "").strip()
+    if len(link_token) < 32:
+        raise ValueError("Tater pairing response did not contain valid link credentials.")
+
+    linked_at = str(payload.get("linked_at") or _iso_now()).strip()
+    tater_name = str(payload.get("tater_name") or "Tater").strip() or "Tater"
+    with AUTO_TRAIN_LOCK:
+        AUTO_TRAIN_CONFIG["tater_url"] = base_url
+        AUTO_TRAIN_CONFIG["tater_link_token"] = link_token
+        AUTO_TRAIN_CONFIG["tater_link_id"] = trainer_id
+        AUTO_TRAIN_CONFIG["tater_linked_at"] = linked_at
+        AUTO_TRAIN_CONFIG["tater_link_tater_name"] = tater_name
+        _save_auto_train_config_locked()
+    return {
+        "ok": True,
+        "message": "Tater linked successfully.",
+        **_tater_link_public_status(),
+    }
+
+
+def _unlink_tater() -> Dict[str, Any]:
+    with AUTO_TRAIN_LOCK:
+        base_url = str(AUTO_TRAIN_CONFIG.get("tater_url") or "").strip().rstrip("/")
+        link_token = str(AUTO_TRAIN_CONFIG.get("tater_link_token") or "").strip()
+    remote_error = ""
+    if base_url and link_token:
+        request = URLRequest(
+            f"{base_url}/api/tater/satellite/v1/trainer/link/unlink",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Tater-Trainer-Token": link_token,
+                "User-Agent": "microWakeWord-Trainer/tater-link",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=10):
+                pass
+        except Exception as exc:
+            remote_error = str(exc)
+    with AUTO_TRAIN_LOCK:
+        AUTO_TRAIN_CONFIG["tater_link_token"] = ""
+        AUTO_TRAIN_CONFIG["tater_link_id"] = ""
+        AUTO_TRAIN_CONFIG["tater_linked_at"] = ""
+        AUTO_TRAIN_CONFIG["tater_link_tater_name"] = ""
+        _save_auto_train_config_locked()
+    return {
+        "ok": True,
+        "message": "Tater link removed." if not remote_error else "Local Tater link removed; Tater could not be reached.",
+        "remote_error": remote_error,
+        **_tater_link_public_status(),
+    }
 
 
 def _normalize_transcript_text(value: Any) -> str:
@@ -843,74 +976,49 @@ def _auto_review_capture(file_name: str) -> None:
             AUTO_TRAIN_RUNTIME["review_file"] = ""
 
 
-def _connected_tater_satellite_selectors(payload: Any) -> List[str]:
-    if not isinstance(payload, dict):
-        return []
-
-    clients: Any = None
-    for key in ("clients", "satellites", "devices"):
-        if isinstance(payload.get(key), (dict, list)):
-            clients = payload.get(key)
-            break
-    if isinstance(clients, dict):
-        rows = [
-            (str(key or "").strip(), value)
-            for key, value in clients.items()
-        ]
-    elif isinstance(clients, list):
-        rows = [("", value) for value in clients]
-    else:
-        rows = []
-
-    selectors: List[str] = []
-    seen: set[str] = set()
-    for fallback_selector, row in rows:
-        if not isinstance(row, dict) or not _config_bool(row.get("connected"), False):
-            continue
-        selector = str(row.get("selector") or fallback_selector).strip()
-        if not selector or selector in seen:
-            continue
-        seen.add(selector)
-        selectors.append(selector)
-    return selectors
-
-
-def _notify_tater_satellites() -> Dict[str, Any]:
+def _notify_tater_satellites(wake_word_name: str = "") -> Dict[str, Any]:
     with AUTO_TRAIN_LOCK:
         config = dict(AUTO_TRAIN_CONFIG)
     if not config.get("notify_satellites"):
         return {"ok": True, "skipped": True, "message": "Satellite notification is disabled."}
 
     base_url = str(config.get("tater_url") or "").rstrip("/")
-    settings_endpoint = f"{base_url}/api/tater/satellite/v1/settings"
-    status_endpoint = f"{base_url}/api/tater/satellite/v1/status"
+    settings_endpoint = f"{base_url}/api/tater/satellite/v1/trainer/wake-word"
     headers = {"Content-Type": "application/json", "User-Agent": "microWakeWord-Trainer/auto-train"}
-    token = str(config.get("tater_api_token") or "").strip()
-    if token:
-        headers["X-Tater-Token"] = token
+    token = str(config.get("tater_link_token") or "").strip()
+    if not token:
+        return {
+            "ok": False,
+            "error": "Wake Word Trainer is not linked to Tater. Use Link Tater first.",
+        }
+    headers["X-Tater-Trainer-Token"] = token
 
     try:
-        configured_selector = str(config.get("tater_selector") or "").strip()
-        if configured_selector:
-            selectors = [configured_selector]
-        else:
-            status_request = URLRequest(status_endpoint, headers=headers, method="GET")
-            with urlopen(status_request, timeout=15) as response:
-                status_payload = json.loads(response.read().decode("utf-8"))
-            selectors = _connected_tater_satellite_selectors(status_payload)
+        target_key = safe_name(wake_word_name or config.get("wake_phrase") or "")
+        public_base_url = _advertised_base_url()
+        wake_words = _list_trained_wake_words(public_base_url)
+        target = next(
+            (row for row in wake_words if str(row.get("key") or "").strip() == target_key),
+            None,
+        )
+        if not isinstance(target, dict):
+            raise FileNotFoundError(f"Trained wake word is not available: {target_key}")
+        wake_word_url = str(target.get("json_url") or "").strip()
+        if not wake_word_url.startswith(("http://", "https://")):
+            raise ValueError("The trained wake-word JSON needs an advertised http(s) URL.")
 
-        count = 0
-        refreshes: List[Dict[str, Any]] = []
-        for selector in selectors:
-            body = json.dumps({"selector": selector, "settings": {}}).encode("utf-8")
-            request = URLRequest(settings_endpoint, data=body, headers=headers, method="POST")
-            with urlopen(request, timeout=15) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            push = payload.get("push") if isinstance(payload, dict) and isinstance(payload.get("push"), dict) else {}
-            pushed_count = push.get("count")
-            if isinstance(pushed_count, (int, float)):
-                count += max(0, int(pushed_count))
-            refreshes.append({"selector": selector, "count": pushed_count})
+        body = json.dumps(
+            {
+                "wake_word_name": target_key,
+                "wake_word_url": wake_word_url,
+            }
+        ).encode("utf-8")
+        request = URLRequest(settings_endpoint, data=body, headers=headers, method="POST")
+        with urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        push = payload.get("push") if isinstance(payload, dict) and isinstance(payload.get("push"), dict) else {}
+        pushed_count = push.get("count")
+        count = max(0, int(pushed_count)) if isinstance(pushed_count, (int, float)) else 0
 
         with AUTO_TRAIN_LOCK:
             AUTO_TRAIN_STATE["last_notify_at"] = _iso_now()
@@ -920,9 +1028,23 @@ def _notify_tater_satellites() -> Dict[str, Any]:
         return {
             "ok": True,
             "count": count,
-            "selectors": selectors,
-            "refreshes": refreshes,
+            "wake_word": str(target.get("wake_word") or target_key),
+            "wake_word_name": target_key,
+            "wake_word_url": wake_word_url,
         }
+    except HTTPError as exc:
+        detail = ""
+        with contextlib.suppress(Exception):
+            error_payload = json.loads(exc.read().decode("utf-8"))
+            if isinstance(error_payload, dict):
+                detail = str(error_payload.get("detail") or error_payload.get("error") or "").strip()
+        error = detail or f"Tater rejected the wake word (HTTP {exc.code})."
+        with AUTO_TRAIN_LOCK:
+            AUTO_TRAIN_STATE["last_notify_at"] = _iso_now()
+            AUTO_TRAIN_STATE["last_notify_count"] = None
+            AUTO_TRAIN_STATE["last_notify_error"] = error
+            _save_auto_train_state_locked()
+        return {"ok": False, "error": error}
     except Exception as exc:
         with AUTO_TRAIN_LOCK:
             AUTO_TRAIN_STATE["last_notify_at"] = _iso_now()
@@ -969,7 +1091,113 @@ def _release_training_run_lock(lock_file) -> None:
         lock_file.close()
 
 
+def _terminate_training_process_tree(
+    proc: subprocess.Popen,
+    *,
+    graceful_timeout: float = 12.0,
+    kill_timeout: float = 3.0,
+) -> bool:
+    if proc.poll() is not None:
+        return True
+
+    process_group = None
+    if os.name == "posix":
+        with contextlib.suppress(Exception):
+            candidate = os.getpgid(proc.pid)
+            if candidate > 0 and candidate != os.getpgrp():
+                process_group = candidate
+
+    try:
+        if process_group is not None:
+            os.killpg(process_group, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except ProcessLookupError:
+        return True
+    except Exception as exc:
+        _append_train_log(f"⚠ Could not request a graceful training stop: {exc}")
+
+    try:
+        proc.wait(timeout=max(0.1, float(graceful_timeout)))
+        return True
+    except subprocess.TimeoutExpired:
+        _append_train_log("⚠ Training did not stop gracefully; forcing its process group to exit.")
+
+    try:
+        if process_group is not None:
+            os.killpg(process_group, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return True
+    except Exception as exc:
+        _append_train_log(f"⚠ Could not force the training process to stop: {exc}")
+
+    try:
+        proc.wait(timeout=max(0.1, float(kill_timeout)))
+    except subprocess.TimeoutExpired:
+        return False
+    return proc.poll() is not None
+
+
+def _start_training_thread(
+    safe_word: str,
+    language: str,
+    auto_run: bool,
+    training_lock,
+) -> threading.Thread:
+    global TRAINING_THREAD
+    if TRAINING_SHUTDOWN_EVENT.is_set():
+        raise RuntimeError("WakeWord Trainer is shutting down.")
+
+    thread = threading.Thread(
+        target=_run_training_background,
+        args=(safe_word, language, auto_run, training_lock),
+        daemon=True,
+        name="wake-word-training",
+    )
+    with TRAINING_RUNTIME_LOCK:
+        if TRAINING_SHUTDOWN_EVENT.is_set():
+            raise RuntimeError("WakeWord Trainer is shutting down.")
+        if TRAINING_THREAD is not None and TRAINING_THREAD.is_alive():
+            raise RuntimeError("Training is already running.")
+        TRAINING_THREAD = thread
+    try:
+        thread.start()
+    except Exception:
+        with TRAINING_RUNTIME_LOCK:
+            if TRAINING_THREAD is thread:
+                TRAINING_THREAD = None
+        raise
+    return thread
+
+
+def _stop_training_runtime(timeout: float = 20.0) -> bool:
+    TRAINING_SHUTDOWN_EVENT.set()
+    with TRAINING_RUNTIME_LOCK:
+        proc = TRAINING_PROCESS
+        thread = TRAINING_THREAD
+
+    stopped = True
+    if proc is not None:
+        stopped = _terminate_training_process_tree(
+            proc,
+            graceful_timeout=min(12.0, max(1.0, float(timeout))),
+        )
+
+    if (
+        thread is not None
+        and thread is not threading.current_thread()
+        and thread.is_alive()
+    ):
+        thread.join(timeout=max(0.1, float(timeout)))
+        stopped = stopped and not thread.is_alive()
+    return stopped
+
+
 def _start_auto_training() -> Dict[str, Any]:
+    if TRAINING_SHUTDOWN_EVENT.is_set():
+        return {"ok": False, "error": "WakeWord Trainer is shutting down."}
     with AUTO_TRAIN_LOCK:
         config = dict(AUTO_TRAIN_CONFIG)
     wake_phrase = str(config.get("wake_phrase") or "").strip()
@@ -1004,11 +1232,7 @@ def _start_auto_training() -> Dict[str, Any]:
                 AUTO_TRAIN_STATE.get("pending_negative_count") or 0
             )
             _save_auto_train_state_locked()
-        threading.Thread(
-            target=_run_training_background,
-            args=(safe_word, language, True, training_lock),
-            daemon=True,
-        ).start()
+        _start_training_thread(safe_word, language, True, training_lock)
     except Exception as exc:
         with STATE_LOCK:
             STATE["training"]["running"] = False
@@ -1086,9 +1310,23 @@ def _start_auto_train_worker() -> None:
         AUTO_TRAIN_WORKER.start()
 
 
-def _stop_auto_train_worker() -> None:
+def _stop_auto_train_worker(timeout: float = 5.0) -> bool:
+    global AUTO_TRAIN_WORKER
     AUTO_TRAIN_STOP_EVENT.set()
     AUTO_TRAIN_WAKE_EVENT.set()
+    worker = AUTO_TRAIN_WORKER
+    if (
+        worker is not None
+        and worker is not threading.current_thread()
+        and worker.is_alive()
+    ):
+        worker.join(timeout=max(0.1, float(timeout)))
+    stopped = worker is None or not worker.is_alive()
+    if stopped:
+        with AUTO_TRAIN_LOCK:
+            if AUTO_TRAIN_WORKER is worker:
+                AUTO_TRAIN_WORKER = None
+    return stopped
 
 
 def _sync_personal_samples_state() -> List[str]:
@@ -1897,9 +2135,11 @@ def _run_training_background(
     auto_run: bool = False,
     training_lock=None,
 ):
+    global TRAINING_PROCESS, TRAINING_THREAD
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
     cmd = ["bash", TRAIN_SCRIPT, safe_word]
     rc = 999
+    proc: subprocess.Popen | None = None
 
     with STATE_LOCK:
         STATE["training"]["running"] = True
@@ -1928,16 +2168,29 @@ def _run_training_background(
                 bufsize=1,
                 env=env,
                 pass_fds=(training_lock.fileno(),) if training_lock is not None else (),
+                start_new_session=(os.name == "posix"),
             )
+            with TRAINING_RUNTIME_LOCK:
+                TRAINING_PROCESS = proc
+            if TRAINING_SHUTDOWN_EVENT.is_set():
+                _append_train_log("→ Trainer shutdown requested; stopping the active training run.")
+                _terminate_training_process_tree(proc)
             assert proc.stdout is not None
-            for line in proc.stdout:
-                lf.write(line)
-                lf.flush()
-                _append_train_log(line)
+            try:
+                for line in proc.stdout:
+                    lf.write(line)
+                    lf.flush()
+                    _append_train_log(line)
+            finally:
+                with contextlib.suppress(Exception):
+                    proc.stdout.close()
 
             rc = proc.wait()
 
-        _append_train_log(f"✓ Training finished (exit_code={rc})")
+        if TRAINING_SHUTDOWN_EVENT.is_set() and rc != 0:
+            _append_train_log(f"→ Training stopped for Trainer shutdown (exit_code={rc})")
+        else:
+            _append_train_log(f"✓ Training finished (exit_code={rc})")
         with STATE_LOCK:
             STATE["training"]["exit_code"] = rc
 
@@ -1951,7 +2204,7 @@ def _run_training_background(
             with AUTO_TRAIN_LOCK:
                 AUTO_TRAIN_STATE["last_train_finished_at"] = _iso_now()
                 AUTO_TRAIN_STATE["last_train_exit_code"] = rc
-                if rc == 0:
+                if rc == 0 and not TRAINING_SHUTDOWN_EVENT.is_set():
                     consumed = int(AUTO_TRAIN_RUNTIME.get("training_pending_consumed") or 0)
                     AUTO_TRAIN_STATE["pending_negative_count"] = max(
                         0,
@@ -1959,19 +2212,24 @@ def _run_training_background(
                     )
                 AUTO_TRAIN_RUNTIME["training_pending_consumed"] = 0
                 _save_auto_train_state_locked()
-            if rc == 0:
-                _append_train_log("→ Asking Tater to refresh the active wake model on connected satellites")
-                notify_result = _notify_tater_satellites()
+            if rc == 0 and not TRAINING_SHUTDOWN_EVENT.is_set():
+                _append_train_log("→ Publishing the newly trained wake word to Tater and all satellites")
+                notify_result = _notify_tater_satellites(safe_word)
                 if notify_result.get("ok"):
                     if notify_result.get("skipped"):
-                        _append_train_log("→ Satellite refresh skipped (disabled in Auto Training)")
+                        _append_train_log("→ Wake-word publish skipped (disabled in Auto Training)")
                     else:
                         count = notify_result.get("count")
                         suffix = f" ({count} connected)" if count is not None else ""
-                        _append_train_log(f"✓ Tater satellite refresh requested{suffix}")
+                        _append_train_log(f"✓ New wake word activated through Tater{suffix}")
                 else:
-                    _append_train_log(f"✗ Tater satellite refresh failed: {notify_result.get('error')}")
+                    _append_train_log(f"✗ Tater wake-word activation failed: {notify_result.get('error')}")
     finally:
+        with TRAINING_RUNTIME_LOCK:
+            if TRAINING_PROCESS is proc:
+                TRAINING_PROCESS = None
+            if TRAINING_THREAD is threading.current_thread():
+                TRAINING_THREAD = None
         with STATE_LOCK:
             STATE["training"]["running"] = False
         _release_training_run_lock(training_lock)
@@ -1980,12 +2238,18 @@ def _run_training_background(
 # -------------------- Routes --------------------
 @app.on_event("startup")
 def start_auto_train_worker_event():
+    TRAINING_SHUTDOWN_EVENT.clear()
     _start_auto_train_worker()
 
 
 @app.on_event("shutdown")
 def stop_auto_train_worker_event():
-    _stop_auto_train_worker()
+    worker_stopped = _stop_auto_train_worker(timeout=5.0)
+    training_stopped = _stop_training_runtime(timeout=20.0)
+    if not worker_stopped:
+        _append_train_log("⚠ Auto-training worker did not stop before shutdown.")
+    if not training_stopped:
+        _append_train_log("⚠ Training worker did not stop before shutdown.")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2014,12 +2278,15 @@ def auto_train_status(request: Request):
 @app.put("/api/auto_train")
 def update_auto_train(payload: Dict[str, Any] = None):
     incoming = dict(payload or {})
+    for protected_key in (
+        "tater_link_token",
+        "tater_link_id",
+        "tater_linked_at",
+        "tater_link_tater_name",
+    ):
+        incoming.pop(protected_key, None)
     with AUTO_TRAIN_LOCK:
         previous = dict(AUTO_TRAIN_CONFIG)
-        if incoming.pop("clear_tater_api_token", False):
-            incoming["tater_api_token"] = ""
-        elif not str(incoming.get("tater_api_token") or "").strip():
-            incoming.pop("tater_api_token", None)
         try:
             normalized = _normalize_auto_train_config(incoming, base=previous)
         except ValueError as exc:
@@ -2044,6 +2311,25 @@ def update_auto_train(payload: Dict[str, Any] = None):
     else:
         queued = 0
     return {"ok": True, "queued": queued, **_auto_train_status_payload()}
+
+
+@app.post("/api/tater_link/claim")
+def tater_link_claim(payload: Dict[str, Any] = None):
+    body = payload if isinstance(payload, dict) else {}
+    try:
+        return _claim_tater_link(
+            body.get("tater_url"),
+            body.get("pairing_code"),
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+
+
+@app.post("/api/tater_link/unlink")
+def tater_link_unlink():
+    return _unlink_tater()
 
 
 @app.post("/api/auto_train/action")
@@ -2608,6 +2894,11 @@ def trained_wake_word_artifact(filename: str):
 def train_now(payload: Dict[str, Any] = None):
     payload = payload or {}
     allow_no_personal = bool(payload.get("allow_no_personal", False))
+    if TRAINING_SHUTDOWN_EVENT.is_set():
+        return JSONResponse(
+            {"ok": False, "error": "WakeWord Trainer is shutting down."},
+            status_code=503,
+        )
 
     with STATE_LOCK:
         safe_word = STATE["safe_word"]
@@ -2661,12 +2952,7 @@ def train_now(payload: Dict[str, Any] = None):
             )
         STATE["training"]["running"] = True
     try:
-        t = threading.Thread(
-            target=_run_training_background,
-            args=(safe_word, language, False, training_lock),
-            daemon=True,
-        )
-        t.start()
+        _start_training_thread(safe_word, language, False, training_lock)
     except Exception as exc:
         with STATE_LOCK:
             STATE["training"]["running"] = False

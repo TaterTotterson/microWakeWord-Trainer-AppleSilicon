@@ -1,3 +1,3 @@
-- macOS startup now finds every validated trainer backend process, including orphans that already released port 8789, and waits for the actual process to exit before launching the updated backend.
-- Lingering validated trainer processes are force-stopped after a grace period, while unrelated processes remain protected.
-- Added a cross-process training lock so duplicate backends cannot run training against the same Python environment concurrently.
+- Added secure Tater linking: enter the short-lived code from Tater Voice Settings instead of giving the trainer a general API token.
+- Automatic and manual publishing now tell Tater which trained wake word is active, and Tater applies it globally to every connected satellite.
+- macOS shutdown and restart now wait for the trainer backend, scheduler, active training process group, and child processes to exit, preventing stuck updates and orphaned trainer processes.

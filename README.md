@@ -218,7 +218,7 @@ Auto Training is disabled until it is configured in its own tab.
 
 1. Enter the active wake phrase and STT language.
 2. Choose how often training may run and how many new negatives are required.
-3. Set the Tater URL (normally `http://127.0.0.1:8501` when Tater runs on the same Mac) and optional API token or satellite selector.
+3. Set the Tater URL (normally `http://127.0.0.1:8501` when Tater runs on the same Mac), click `Link Tater`, and enter the short-lived code shown in Tater Voice Settings. After training, the trainer tells Tater which new wake-word JSON is active and Tater broadcasts it to every satellite.
 4. Save and enable Auto Training.
 
 New wake-trigger captures are transcribed locally with MLX Whisper. A normal wake trigger moves to `negative_samples/` only when STT returns text and the configured wake phrase is absent. By default, confirmed phrase matches stay in `Captured Audio` for review.
@@ -232,9 +232,9 @@ A close miss that was blocked by VAD, has an empty transcript, or does not conta
 
 Saving Auto Training settings also scans existing eligible captures. Enabling close-miss promotion reviews previous unreviewed close misses, while enabling cleanup removes previously confirmed good wakes without transcribing them a second time.
 
-The first automatic transcription downloads the configured MLX Whisper model into `auto_train_models/`. Scheduled training only starts after the configured number of new auto-reviewed negatives has accumulated. A successful automatic run asks Tater to re-fetch each connected satellite's current custom wake JSON profile and re-push its native live settings. The current Tater Native firmware treats that settings generation as a forced refresh and downloads the updated model even though its JSON URL has not changed.
+The first automatic transcription downloads the configured MLX Whisper model into `auto_train_models/`. Scheduled training only starts after the configured number of new auto-reviewed negatives has accumulated. A successful automatic run securely publishes the trained wake-word name and JSON URL to the linked Tater instance. Tater saves it as the global satellite wake word and pushes the updated setting to every connected satellite.
 
-Use `Review inbox now`, `Train now`, and `Refresh satellites now` to run each stage manually while testing the setup.
+Use `Review inbox now`, `Train now`, and `Publish current wake word now` to run each stage manually while testing the setup.
 
 ---
 
