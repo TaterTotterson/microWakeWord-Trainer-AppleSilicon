@@ -1,4 +1,4 @@
-- Fixed the v21 startup failure caused by malformed indentation in the Parakeet ONNX loader.
-- Preserved automatic download, resume, and offline reuse of the required Parakeet INT8 model snapshot.
-- Fixed the in-app updater remaining stuck after installing a new app bundle by completing shutdown through AppKit's termination run-loop mode.
-- Added a safe installer fallback for a stuck old app process and regression checks for source compilation and updater shutdown.
+- Improved automatic review accuracy for short wake phrases that STT initially hears as similar-sounding words.
+- Added a conservative Faster Whisper confirmation pass that uses the currently configured wake phrase only when the unbiased transcript is already phonetically close.
+- Kept unconfirmed close transcripts in the manual review inbox instead of allowing them to become harmful negative training samples.
+- Added visible guided-transcript and review-reason details, plus retry support for ambiguous clips through Review Now.
