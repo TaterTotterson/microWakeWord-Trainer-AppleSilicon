@@ -13,6 +13,7 @@ LAUNCHER_SOURCE = (
     / "main.swift"
 )
 RUN_SCRIPT = ROOT / "run.sh"
+TRAINER_SOURCE = ROOT / "trainer_server.py"
 
 
 class MacOSLauncherRuntimeTests(unittest.TestCase):
@@ -66,6 +67,36 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
         )
         self.assertIn('dependency_fingerprint > "$PIN_FILE"', self.run_script)
         self.assertNotIn('touch "$PIN_FILE"', self.run_script)
+
+    def test_trainer_source_compiles(self):
+        source = TRAINER_SOURCE.read_text(encoding="utf-8")
+        compile(source, str(TRAINER_SOURCE), "exec")
+
+    def test_termination_reply_runs_in_appkit_modal_run_loop(self):
+        start = self.launcher.index("func applicationShouldTerminate(")
+        end = self.launcher.index("private func startRecoveryWatchdog", start)
+        implementation = self.launcher[start:end]
+
+        self.assertIn("CFRunLoopPerformBlock(", implementation)
+        self.assertIn(
+            "RunLoop.Mode.modalPanel.rawValue as CFString",
+            implementation,
+        )
+        self.assertIn("CFRunLoopWakeUp(mainRunLoop)", implementation)
+        self.assertNotIn("DispatchQueue.main.async {", implementation)
+
+    def test_installer_forces_stuck_old_app_to_exit_before_replacing_it(self):
+        start = self.launcher.index("private func writeInstallerScript()")
+        end = self.launcher.index("private func safePathComponent", start)
+        implementation = self.launcher[start:end]
+
+        term_index = implementation.index('kill -TERM "$APP_PID"')
+        kill_index = implementation.index('kill -KILL "$APP_PID"')
+        target_index = implementation.index(
+            'TARGET_PARENT="$(dirname "$TARGET_APP")"'
+        )
+        self.assertLess(term_index, kill_index)
+        self.assertLess(kill_index, target_index)
 
 
 if __name__ == "__main__":

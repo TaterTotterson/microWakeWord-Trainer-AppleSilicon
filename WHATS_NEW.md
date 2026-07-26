@@ -1,4 +1,4 @@
-- Fixed first-run Parakeet ONNX setup failing when its empty model directory was mistaken for a complete offline model.
-- Parakeet now downloads or resumes its required INT8 snapshot before loading, then reuses a complete local snapshot without Hub access.
-- The macOS launcher now refreshes its private recorder dependencies whenever their specification changes, so existing installations receive newly required STT packages.
-- Improved updater and shutdown reliability by detaching completed backend output streams before waiting for the trainer process to exit.
+- Fixed the v21 startup failure caused by malformed indentation in the Parakeet ONNX loader.
+- Preserved automatic download, resume, and offline reuse of the required Parakeet INT8 model snapshot.
+- Fixed the in-app updater remaining stuck after installing a new app bundle by completing shutdown through AppKit's termination run-loop mode.
+- Added a safe installer fallback for a stuck old app process and regression checks for source compilation and updater shutdown.

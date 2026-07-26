@@ -1336,10 +1336,32 @@ private final class UpdateManager {
         SCRIPT_PATH="$0"
         WAIT_COUNT=0
 
-        while kill -0 "$APP_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 150 ]; do
+        while kill -0 "$APP_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 225 ]; do
           sleep 0.2
           WAIT_COUNT=$((WAIT_COUNT + 1))
         done
+
+        if kill -0 "$APP_PID" 2>/dev/null; then
+          kill -TERM "$APP_PID" 2>/dev/null || true
+          WAIT_COUNT=0
+          while kill -0 "$APP_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 25 ]; do
+            sleep 0.2
+            WAIT_COUNT=$((WAIT_COUNT + 1))
+          done
+        fi
+
+        if kill -0 "$APP_PID" 2>/dev/null; then
+          kill -KILL "$APP_PID" 2>/dev/null || true
+          WAIT_COUNT=0
+          while kill -0 "$APP_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 25 ]; do
+            sleep 0.2
+            WAIT_COUNT=$((WAIT_COUNT + 1))
+          done
+        fi
+
+        if kill -0 "$APP_PID" 2>/dev/null; then
+          exit 1
+        fi
 
         TARGET_PARENT="$(dirname "$TARGET_APP")"
         TARGET_NAME="$(basename "$TARGET_APP")"
@@ -1801,9 +1823,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         updateMenuResetTimer?.invalidate()
         DispatchQueue.global(qos: .userInitiated).async { [weak self, weak sender] in
             self?.backend.stop(waitForExit: true)
-            DispatchQueue.main.async {
-                sender?.reply(toApplicationShouldTerminate: true)
+            guard let sender else { return }
+            let mainRunLoop = CFRunLoopGetMain()
+            CFRunLoopPerformBlock(
+                mainRunLoop,
+                RunLoop.Mode.modalPanel.rawValue as CFString
+            ) {
+                sender.reply(toApplicationShouldTerminate: true)
             }
+            CFRunLoopWakeUp(mainRunLoop)
         }
         return .terminateLater
     }
