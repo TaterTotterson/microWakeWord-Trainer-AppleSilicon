@@ -70,14 +70,25 @@ class ShutdownTests(unittest.TestCase):
 
     def test_active_training_process_group_stops_during_shutdown(self):
         original_root = trainer.ROOT_DIR
+        original_data = trainer.DATA_DIR
         original_script = trainer.TRAIN_SCRIPT
         trainer.TRAINING_SHUTDOWN_EVENT.clear()
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 root = Path(temp_dir)
-                script = root / "train.sh"
-                script.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
-                trainer.ROOT_DIR = root
+                source = root / "source"
+                data = root / "data"
+                source.mkdir()
+                data.mkdir()
+                script = source / "train.sh"
+                script.write_text(
+                    "#!/bin/sh\n"
+                    "printf '%s\\n' \"$PWD\" > \"$WAKEWORD_TRAINER_DATA_DIR/working-directory.txt\"\n"
+                    "sleep 30\n",
+                    encoding="utf-8",
+                )
+                trainer.ROOT_DIR = source
+                trainer.DATA_DIR = data
                 trainer.TRAIN_SCRIPT = str(script)
 
                 thread = trainer._start_training_thread("hey_tater", "en", False, None)
@@ -91,12 +102,24 @@ class ShutdownTests(unittest.TestCase):
                 else:
                     self.fail("Training subprocess did not start.")
 
+                working_directory_file = data / "working-directory.txt"
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline and not working_directory_file.exists():
+                    time.sleep(0.02)
+                self.assertEqual(
+                    Path(working_directory_file.read_text(encoding="utf-8").strip()).resolve(),
+                    data.resolve(),
+                )
+                self.assertTrue((data / "recorder_training.log").exists())
+                self.assertFalse((source / "recorder_training.log").exists())
+
                 self.assertTrue(trainer._stop_training_runtime(timeout=3.0))
                 thread.join(timeout=1.0)
                 self.assertFalse(thread.is_alive())
                 self.assertIsNotNone(proc.poll())
         finally:
             trainer.ROOT_DIR = original_root
+            trainer.DATA_DIR = original_data
             trainer.TRAIN_SCRIPT = original_script
 
     def test_server_shutdown_stops_scheduler_before_training_runtime(self):

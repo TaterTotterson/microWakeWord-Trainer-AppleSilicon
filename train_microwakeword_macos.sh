@@ -10,6 +10,16 @@
 
 set -euo pipefail
 
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUPPORT_DIR="${WAKEWORD_TRAINER_SUPPORT_DIR:-${HOME}/.taterwakewordtrainer}"
+WORK_DIR="${WAKEWORD_TRAINER_DATA_DIR:-${SUPPORT_DIR}/app/current}"
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
+export WAKEWORD_TRAINER_SUPPORT_DIR="$SUPPORT_DIR"
+export WAKEWORD_TRAINER_DATA_DIR="$WORK_DIR"
+echo "📁 Trainer source: $SOURCE_DIR"
+echo "📁 Training data: $WORK_DIR"
+
 TARGET_WORD="${1:-hey_tater}"
 MAX_TTS_SAMPLES="${2:-50000}"
 BATCH_SIZE="${3:-100}"
@@ -244,7 +254,7 @@ fi
 "$PY" -m pip install -q -e ./micro-wake-word || true
 
 # piper-sample-generator (TaterTotterson fork)
-bash scripts_macos/get_piper_generator.sh
+bash "$SOURCE_DIR/scripts_macos/get_piper_generator.sh"
 ensure_torch_audio_stack
 
 # ── verify Metal GPU (optional) ───────────────────────────────────────────────
@@ -341,7 +351,7 @@ compute_sample_cache_key() {
     printf 'samples=%s\n' "$MAX_TTS_SAMPLES"
     printf 'batch=%s\n' "$BATCH_SIZE"
     printf 'language=%s\n' "$LANGUAGE"
-    stat -f 'generator_wrapper=%N:%m:%z' "scripts_macos/run_generator_with_progress.py"
+    stat -f 'generator_wrapper=%N:%m:%z' "$SOURCE_DIR/scripts_macos/run_generator_with_progress.py"
     for model_path in "${PIPER_MODELS[@]}"; do
       if [[ -e "$model_path" ]]; then
         stat -f 'model=%N:%m:%z' "$model_path"
@@ -380,7 +390,7 @@ compute_feature_cache_key() {
     printf 'sample_key=%s\n' "$sample_key"
     printf 'personal_key=%s\n' "$personal_key"
     printf 'reviewed_negative_key=%s\n' "$reviewed_negative_key"
-    stat -f 'feature_script=%N:%m:%z' "scripts_macos/make_features.py"
+    stat -f 'feature_script=%N:%m:%z' "$SOURCE_DIR/scripts_macos/make_features.py"
     for dataset_dir in mit_rirs audioset_16k fma_16k wham_16k chime_16k; do
       printf '%s=%s\n' "$dataset_dir" "$(count_matching_files "$dataset_dir" '*.wav')"
     done
@@ -423,7 +433,7 @@ if [[ "$sample_cache_hit" != "true" ]]; then
   LENGTH_SCALES=(0.85 0.95 1.0 1.05 1.15)
   generator_cmd=(
     "$PY"
-    "scripts_macos/run_generator_with_progress.py"
+    "$SOURCE_DIR/scripts_macos/run_generator_with_progress.py"
     "--generator" "piper-sample-generator/generate_samples.py"
     "--output-dir" "generated_samples"
     "--max-samples" "$MAX_TTS_SAMPLES"
@@ -460,12 +470,12 @@ fi
 
 # ── (C) pull/prepare augmentation datasets (RIR, Audioset, FMA) ──────────────
 echo "📚 Preparing augmentation datasets (MIT RIR, AudioSet, FMA, WHAM, CHiME)…"
-"$PY" scripts_macos/prepare_datasets.py
+"$PY" "$SOURCE_DIR/scripts_macos/prepare_datasets.py"
 
 # ── (D) trim silence from personal samples, if any exists
 if dir_has_matching_files "personal_samples" "*.wav"; then
   echo "✂️ Trimming silence from personal samples…"
-  "$PY" scripts_macos/trim_silence.py
+  "$PY" "$SOURCE_DIR/scripts_macos/trim_silence.py"
 else
   echo "ℹ️ No personal samples uploaded; skipping silence trimming."
 fi
@@ -516,7 +526,7 @@ else
     rm -rf generated_augmented_features personal_augmented_features reviewed_negative_features
   fi
   echo "🧪 Building augmented feature sets…"
-  "$PY" scripts_macos/make_features.py
+  "$PY" "$SOURCE_DIR/scripts_macos/make_features.py"
   write_cache_key "$FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
   if [[ "$PERSONAL_CACHE_KEY" != "none" && -d "personal_augmented_features" ]]; then
     write_cache_key "$PERSONAL_FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
@@ -528,11 +538,11 @@ fi
 
 # ── (F) download precomputed negative spectrograms ────────────────────────────
 echo "⬇️ Fetching negative datasets…"
-"$PY" scripts_macos/fetch_negatives.py
+"$PY" "$SOURCE_DIR/scripts_macos/fetch_negatives.py"
 
 # ── (G) write training YAML (tuned for your notebook) ────────────────────────
 echo "📝 Writing training config…"
-"$PY" scripts_macos/write_training_yaml.py
+"$PY" "$SOURCE_DIR/scripts_macos/write_training_yaml.py"
 
 # ── (H) train + export (Metal TF) ────────────────────────────────────────────
 echo "🏋️ Starting model training and TFLite export (this is the longest stage)…"
@@ -559,7 +569,7 @@ echo "🧠 Model quality: high_accuracy_plus"
 # ── (I) calibrate detector metadata ────────────────────────────────────────────
 CALIBRATION_JSON="trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
 echo "🎯 Calibrating detector settings for on-device use…"
-if "$PY" scripts_macos/calibrate_detector.py \
+if "$PY" "$SOURCE_DIR/scripts_macos/calibrate_detector.py" \
   --training-config "trained_models/wakeword/training_config.yaml" \
   --model "trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite" \
   --output "$CALIBRATION_JSON" \

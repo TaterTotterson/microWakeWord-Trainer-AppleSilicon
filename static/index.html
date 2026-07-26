@@ -1348,7 +1348,7 @@
         </div>
         <label class="checkField">
           <input id="autoEnabled" type="checkbox" />
-          <span><strong>Enable Auto Training</strong>Eligible wake triggers will be queued for local MLX Whisper transcription.</span>
+          <span><strong>Enable Auto Training</strong>Eligible wake triggers will be queued for transcription with the selected local STT engine.</span>
         </label>
         <label class="checkField">
           <input id="autoDeleteConfirmedWakes" type="checkbox" />
@@ -1368,8 +1368,12 @@
             <input id="autoLanguage" type="text" value="en" placeholder="en" />
           </label>
           <label class="field wide">
-            <strong>MLX Whisper model</strong>
-            <input id="autoSttModel" type="text" value="mlx-community/whisper-base.en-mlx" />
+            <strong>STT engine</strong>
+            <select id="autoSttEngine">
+              <option value="faster_whisper" selected>Faster Whisper (recommended)</option>
+              <option value="parakeet_onnx">Parakeet ONNX</option>
+              <option value="mlx_whisper">MLX Whisper</option>
+            </select>
           </label>
           <label class="field">
             <strong>Minimum transcript characters</strong>
@@ -2072,7 +2076,7 @@
       $("autoEnabled").checked = Boolean(config.enabled);
       $("autoWakePhrase").value = config.wake_phrase || uiState.session?.raw_phrase || "";
       $("autoLanguage").value = config.language || uiState.session?.language || "en";
-      $("autoSttModel").value = config.stt_model || "mlx-community/whisper-base.en-mlx";
+      $("autoSttEngine").value = config.stt_engine || "faster_whisper";
       $("autoMinimumChars").value = String(config.minimum_transcript_chars ?? 2);
       $("autoDeleteConfirmedWakes").checked = Boolean(config.delete_confirmed_wakes);
       $("autoPromoteCloseMisses").checked = Boolean(config.promote_close_misses);
@@ -2117,6 +2121,10 @@
     if (state.last_review_file) audit.push(state.last_review_file);
     if (state.last_review_transcript) audit.push(`STT: “${state.last_review_transcript}”`);
     if (state.last_review_error) audit.push(`Error: ${state.last_review_error}`);
+    if (state.last_stt_engine) {
+      const runtimeLabel = [state.last_stt_device, state.last_stt_compute_type].filter(Boolean).join(" / ");
+      audit.push(`STT engine: ${String(state.last_stt_engine).replaceAll("_", " ")}${runtimeLabel ? ` · ${runtimeLabel}` : ""}`);
+    }
     if (state.last_notify_at) {
       audit.push(state.last_notify_error
         ? `Wake-word publish failed: ${state.last_notify_error}`
@@ -2137,7 +2145,7 @@
       enabled: $("autoEnabled").checked,
       wake_phrase: ($("autoWakePhrase").value || "").trim(),
       language: ($("autoLanguage").value || "en").trim(),
-      stt_model: ($("autoSttModel").value || "").trim(),
+      stt_engine: $("autoSttEngine").value || "faster_whisper",
       minimum_transcript_chars: Number($("autoMinimumChars").value || 2),
       delete_confirmed_wakes: $("autoDeleteConfirmedWakes").checked,
       promote_close_misses: $("autoPromoteCloseMisses").checked,

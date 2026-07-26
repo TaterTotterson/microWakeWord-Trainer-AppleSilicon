@@ -1,3 +1,3 @@
-- Added secure Tater linking: enter the short-lived code from Tater Voice Settings instead of giving the trainer a general API token.
-- Automatic and manual publishing now tell Tater which trained wake word is active, and Tater applies it globally to every connected satellite.
-- macOS shutdown and restart now wait for the trainer backend, scheduler, active training process group, and child processes to exit, preventing stuck updates and orphaned trainer processes.
+- Added a simple Auto Training STT engine selector with Faster Whisper as the recommended default, Parakeet ONNX, and MLX Whisper.
+- Added managed, language-aware STT models so users choose an engine without manually entering model names or runtime settings.
+- Added automatic runtime selection and model-cache cleanup when switching engines, including Core ML/CPU support for Parakeet and safe local execution for Faster Whisper.

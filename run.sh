@@ -9,9 +9,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUPPORT_DIR="${WAKEWORD_TRAINER_SUPPORT_DIR:-${HOME}/.taterwakewordtrainer}"
+DATA_DIR="${WAKEWORD_TRAINER_DATA_DIR:-${SUPPORT_DIR}/app/current}"
+mkdir -p "$DATA_DIR"
+export WAKEWORD_TRAINER_SUPPORT_DIR="$SUPPORT_DIR"
+export WAKEWORD_TRAINER_DATA_DIR="$DATA_DIR"
+export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 cd "$ROOT_DIR"
 
-VENV_DIR="${REC_VENV_DIR:-$ROOT_DIR/.recorder-venv}"
+VENV_DIR="${REC_VENV_DIR:-$SUPPORT_DIR/recorder-venv}"
 PYTHON_BIN="${REC_PYTHON_BIN:-/opt/homebrew/bin/python3.11}"
 PY="$VENV_DIR/bin/python"
 PIP="$PY -m pip"
@@ -27,7 +33,8 @@ UVICORN_VERSION="${REC_UVICORN_VERSION:-0.30.6}"
 PY_MULTIPART_VERSION="${REC_PY_MULTIPART_VERSION:-0.0.9}"
 
 echo "🎙️ microWakeWord Trainer UI (local)"
-echo "→ ROOT: $ROOT_DIR"
+echo "→ SOURCE: $ROOT_DIR"
+echo "→ DATA: $DATA_DIR"
 echo "→ VENV: $VENV_DIR"
 echo "→ PYTHON_BIN: $PYTHON_BIN"
 
@@ -39,7 +46,9 @@ install_ui_deps() {
     "python-multipart==${PY_MULTIPART_VERSION}" \
     "silero-vad>=5.0.0" \
     "numpy>=1.24.0" \
-    "mlx-whisper"
+    "mlx-whisper" \
+    "faster-whisper>=1.0.0" \
+    "onnx-asr[hub]>=0.12.0"
 }
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -94,8 +103,10 @@ exact = {
 minimum = {
     "silero-vad": "5.0.0",
     "numpy": "1.24.0",
+    "faster-whisper": "1.0.0",
+    "onnx-asr": "0.12.0",
 }
-present = ("torch", "mlx-whisper")
+present = ("torch", "mlx-whisper", "onnxruntime")
 
 for package, expected in exact.items():
     if md.version(package) != expected:

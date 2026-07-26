@@ -32,6 +32,7 @@ rsync -a --delete \
   --exclude='.github/' \
   --exclude='.agents/' \
   --exclude='.codex/' \
+  --exclude='.cache/' \
   --exclude='.recorder-venv/' \
   --exclude='.venv/' \
   --exclude='__pycache__/' \
@@ -42,8 +43,15 @@ rsync -a --delete \
   --exclude='negative_samples/' \
   --exclude='captured_audio/' \
   --exclude='trim_history/' \
+  --exclude='auto_train_config.json' \
+  --exclude='auto_train_state.json' \
+  --exclude='auto_train_models/' \
+  --exclude='recorder_training.log' \
+  --exclude='training_parameters.yaml' \
+  --exclude='fma_corrupted_files.log' \
   --exclude='trained_wake_words/' \
   --exclude='trained_models/' \
+  --exclude='output/' \
   --exclude='generated_samples/' \
   --exclude='generated_augmented_features/' \
   --exclude='personal_augmented_features/' \
@@ -51,11 +59,14 @@ rsync -a --delete \
   --exclude='micro-wake-word/' \
   --exclude='piper-sample-generator/' \
   --exclude='mit_rirs/' \
+  --exclude='negative_datasets/' \
   --exclude='audioset/' \
   --exclude='audioset_16k/' \
   --exclude='fma/' \
   --exclude='fma_16k/' \
+  --exclude='wham/' \
   --exclude='wham_16k/' \
+  --exclude='chime/' \
   --exclude='chime_16k/' \
   "${REPO_ROOT}/" "${SOURCE_SNAPSHOT_DIR}/"
 

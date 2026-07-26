@@ -3,6 +3,7 @@
 # trainer_server.py
 import contextlib
 import fcntl
+import gc
 import io
 import os
 import queue
@@ -33,7 +34,18 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("WAKEWORD_TRAINER_DATA_DIR", str(ROOT_DIR))).resolve()
+SUPPORT_DIR = Path(
+    os.environ.get(
+        "WAKEWORD_TRAINER_SUPPORT_DIR",
+        str(Path.home() / ".taterwakewordtrainer"),
+    )
+).resolve()
+DATA_DIR = Path(
+    os.environ.get(
+        "WAKEWORD_TRAINER_DATA_DIR",
+        str(SUPPORT_DIR / "app" / "current"),
+    )
+).resolve()
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", str(ROOT_DIR / "static"))).resolve()
 PERSONAL_DIR = Path(os.environ.get("PERSONAL_DIR", str(DATA_DIR / "personal_samples"))).resolve()
 CAPTURED_DIR = Path(os.environ.get("CAPTURED_DIR", str(DATA_DIR / "captured_audio"))).resolve()
@@ -55,10 +67,17 @@ AUTO_TRAIN_MODEL_DIR = Path(
 TRAINING_LOCK_FILE = Path(
     os.environ.get(
         "WAKEWORD_TRAINER_TRAINING_LOCK_FILE",
-        str(ROOT_DIR / ".training.lock"),
+        str(SUPPORT_DIR / "training.lock"),
     )
 ).resolve()
-TRAIN_SCRIPT = os.environ.get("TRAIN_SCRIPT", str(ROOT_DIR / "train_microwakeword_macos.sh"))
+TRAIN_SCRIPT = str(
+    Path(
+        os.environ.get(
+            "TRAIN_SCRIPT",
+            str(ROOT_DIR / "train_microwakeword_macos.sh"),
+        )
+    ).resolve()
+)
 PIPER_ROOT = DATA_DIR / "piper-sample-generator"
 PIPER_VOICES_DIR = PIPER_ROOT / "voices"
 PIPER_VOICES_INDEX_URL = os.environ.get(
@@ -73,7 +92,7 @@ PIPER_CATALOG_CACHE_TTL_SECONDS = int(os.environ.get("PIPER_CATALOG_CACHE_TTL_SE
 PIPER_CATALOG_CACHE_FILE = Path(
     os.environ.get(
         "PIPER_CATALOG_CACHE_FILE",
-        str(ROOT_DIR / ".cache" / "piper_voices_catalog.json"),
+        str(DATA_DIR / ".cache" / "piper_voices_catalog.json"),
     )
 ).resolve()
 DEFAULT_LANGUAGE = os.environ.get("MWW_LANGUAGE", "en")
@@ -84,16 +103,47 @@ TARGET_SAMPLE_RATE = 16000
 TARGET_CHANNELS = 1
 TARGET_SAMPLE_WIDTH_BYTES = 2
 CAPTURE_GAIN_PROFILE = "capture_rms_v1"
-DEFAULT_MLX_WHISPER_MODEL = os.environ.get(
-    "AUTO_TRAIN_STT_MODEL",
+STT_ENGINE_FASTER_WHISPER = "faster_whisper"
+STT_ENGINE_PARAKEET_ONNX = "parakeet_onnx"
+STT_ENGINE_MLX_WHISPER = "mlx_whisper"
+SUPPORTED_STT_ENGINES = {
+    STT_ENGINE_FASTER_WHISPER,
+    STT_ENGINE_PARAKEET_ONNX,
+    STT_ENGINE_MLX_WHISPER,
+}
+DEFAULT_STT_ENGINE = os.environ.get(
+    "AUTO_TRAIN_STT_ENGINE",
+    STT_ENGINE_FASTER_WHISPER,
+).strip().lower().replace("-", "_")
+if DEFAULT_STT_ENGINE not in SUPPORTED_STT_ENGINES:
+    DEFAULT_STT_ENGINE = STT_ENGINE_FASTER_WHISPER
+DEFAULT_FASTER_WHISPER_EN_MODEL = os.environ.get(
+    "AUTO_TRAIN_FASTER_WHISPER_EN_MODEL",
+    "small.en",
+)
+DEFAULT_FASTER_WHISPER_MULTILINGUAL_MODEL = os.environ.get(
+    "AUTO_TRAIN_FASTER_WHISPER_MULTILINGUAL_MODEL",
+    "small",
+)
+DEFAULT_MLX_WHISPER_EN_MODEL = os.environ.get(
+    "AUTO_TRAIN_MLX_WHISPER_EN_MODEL",
     "mlx-community/whisper-base.en-mlx",
 )
+DEFAULT_MLX_WHISPER_MULTILINGUAL_MODEL = os.environ.get(
+    "AUTO_TRAIN_MLX_WHISPER_MULTILINGUAL_MODEL",
+    "mlx-community/whisper-base-mlx",
+)
+DEFAULT_PARAKEET_ONNX_MODEL = os.environ.get(
+    "AUTO_TRAIN_PARAKEET_ONNX_MODEL",
+    "nemo-parakeet-tdt-0.6b-v3",
+)
+DEFAULT_PARAKEET_ONNX_QUANTIZATION = "int8"
 
 AUTO_TRAIN_DEFAULT_CONFIG: Dict[str, Any] = {
     "enabled": False,
     "wake_phrase": "",
     "language": DEFAULT_LANGUAGE,
-    "stt_model": DEFAULT_MLX_WHISPER_MODEL,
+    "stt_engine": DEFAULT_STT_ENGINE,
     "minimum_transcript_chars": 2,
     "delete_confirmed_wakes": False,
     "promote_close_misses": False,
@@ -116,6 +166,10 @@ AUTO_TRAIN_DEFAULT_STATE: Dict[str, Any] = {
     "last_review_transcript": "",
     "last_review_result": "",
     "last_review_error": "",
+    "last_stt_engine": "",
+    "last_stt_model": "",
+    "last_stt_device": "",
+    "last_stt_compute_type": "",
     "last_train_started_at": "",
     "last_train_finished_at": "",
     "last_train_exit_code": None,
@@ -182,6 +236,13 @@ AUTO_TRAIN_RUNTIME: Dict[str, Any] = {
     "training_pending_consumed": 0,
 }
 LAN_ADDRESS_CACHE: Dict[str, Any] = {"value": "", "fetched_at": 0.0}
+FASTER_WHISPER_MODEL_LOCK = threading.RLock()
+FASTER_WHISPER_MODEL_CACHE: Dict[tuple[str, str, str], Any] = {}
+FASTER_WHISPER_TRANSCRIBE_LOCK = threading.RLock()
+MLX_WHISPER_TRANSCRIBE_LOCK = threading.RLock()
+PARAKEET_ONNX_MODEL_LOCK = threading.RLock()
+PARAKEET_ONNX_MODEL_CACHE: Dict[tuple[str, str, tuple[str, ...]], Any] = {}
+PARAKEET_ONNX_TRANSCRIBE_LOCK = threading.RLock()
 PIPER_CATALOG_CACHE: Dict[str, Any] = {
     "fetched_at": 0.0,
     "entries": None,
@@ -266,7 +327,7 @@ def _list_captured_sample_names() -> List[str]:
 def _sync_trained_wake_word_artifacts() -> None:
     """One-time migration for older root-level training outputs."""
     TRAINED_WAKE_WORDS_DIR.mkdir(parents=True, exist_ok=True)
-    for json_path in sorted(ROOT_DIR.glob("*.json")):
+    for json_path in sorted(DATA_DIR.glob("*.json")):
         tflite_path = json_path.with_suffix(".tflite")
         if not tflite_path.exists():
             continue
@@ -426,6 +487,62 @@ def _normalize_http_base_url(value: Any, *, allow_empty: bool = True) -> str:
     return token
 
 
+def _normalize_stt_engine(value: Any) -> str:
+    token = str(value or DEFAULT_STT_ENGINE).strip().lower().replace("-", "_")
+    aliases = {
+        "faster": STT_ENGINE_FASTER_WHISPER,
+        "fasterwhisper": STT_ENGINE_FASTER_WHISPER,
+        "parakeet": STT_ENGINE_PARAKEET_ONNX,
+        "onnx_parakeet": STT_ENGINE_PARAKEET_ONNX,
+        "mlx": STT_ENGINE_MLX_WHISPER,
+        "mlxwhisper": STT_ENGINE_MLX_WHISPER,
+    }
+    token = aliases.get(token, token)
+    if token not in SUPPORTED_STT_ENGINES:
+        raise ValueError("STT engine must be Faster Whisper, Parakeet ONNX, or MLX Whisper.")
+    return token
+
+
+def _managed_stt_model(engine: Any, language: Any = DEFAULT_LANGUAGE) -> str:
+    token = _normalize_stt_engine(engine)
+    language_token = str(language or DEFAULT_LANGUAGE).strip().lower().replace("-", "_")
+    english = language_token == "en" or language_token.startswith("en_")
+    if token == STT_ENGINE_FASTER_WHISPER:
+        return (
+            DEFAULT_FASTER_WHISPER_EN_MODEL
+            if english
+            else DEFAULT_FASTER_WHISPER_MULTILINGUAL_MODEL
+        )
+    if token == STT_ENGINE_MLX_WHISPER:
+        return (
+            DEFAULT_MLX_WHISPER_EN_MODEL
+            if english
+            else DEFAULT_MLX_WHISPER_MULTILINGUAL_MODEL
+        )
+    return DEFAULT_PARAKEET_ONNX_MODEL
+
+
+def _stt_engine_catalog(language: Any = DEFAULT_LANGUAGE) -> List[Dict[str, Any]]:
+    return [
+        {
+            "value": STT_ENGINE_FASTER_WHISPER,
+            "label": "Faster Whisper",
+            "model": _managed_stt_model(STT_ENGINE_FASTER_WHISPER, language),
+            "recommended": True,
+        },
+        {
+            "value": STT_ENGINE_PARAKEET_ONNX,
+            "label": "Parakeet ONNX",
+            "model": _managed_stt_model(STT_ENGINE_PARAKEET_ONNX, language),
+        },
+        {
+            "value": STT_ENGINE_MLX_WHISPER,
+            "label": "MLX Whisper",
+            "model": _managed_stt_model(STT_ENGINE_MLX_WHISPER, language),
+        },
+    ]
+
+
 def _normalize_auto_train_config(values: Dict[str, Any] | None, *, base: Dict[str, Any] | None = None) -> Dict[str, Any]:
     incoming = values if isinstance(values, dict) else {}
     source = {**AUTO_TRAIN_DEFAULT_CONFIG, **(base or {}), **incoming}
@@ -436,7 +553,7 @@ def _normalize_auto_train_config(values: Dict[str, Any] | None, *, base: Dict[st
         "enabled": _config_bool(source.get("enabled")),
         "wake_phrase": str(source.get("wake_phrase") or "").strip(),
         "language": language,
-        "stt_model": str(source.get("stt_model") or DEFAULT_MLX_WHISPER_MODEL).strip() or DEFAULT_MLX_WHISPER_MODEL,
+        "stt_engine": _normalize_stt_engine(source.get("stt_engine")),
         "minimum_transcript_chars": _bounded_int(source.get("minimum_transcript_chars"), 2, 1, 100),
         "delete_confirmed_wakes": _config_bool(source.get("delete_confirmed_wakes")),
         "promote_close_misses": _config_bool(source.get("promote_close_misses")),
@@ -508,10 +625,12 @@ def _public_auto_train_config() -> Dict[str, Any]:
 
 def _auto_train_status_payload() -> Dict[str, Any]:
     with AUTO_TRAIN_LOCK:
+        language = AUTO_TRAIN_CONFIG.get("language") or DEFAULT_LANGUAGE
         return {
             "config": _public_auto_train_config(),
             "state": dict(AUTO_TRAIN_STATE),
             "runtime": dict(AUTO_TRAIN_RUNTIME),
+            "stt_engines": _stt_engine_catalog(language),
             "advertised_base_url": _advertised_base_url(),
             "trainer_link": _tater_link_public_status(),
         }
@@ -753,6 +872,86 @@ def _auto_train_model_environment():
                 os.environ[key] = value
 
 
+def _record_stt_runtime(
+    *,
+    engine: str,
+    model: str,
+    device: str,
+    compute_type: str,
+) -> None:
+    with AUTO_TRAIN_LOCK:
+        AUTO_TRAIN_STATE["last_stt_engine"] = engine
+        AUTO_TRAIN_STATE["last_stt_model"] = model
+        AUTO_TRAIN_STATE["last_stt_device"] = device
+        AUTO_TRAIN_STATE["last_stt_compute_type"] = compute_type
+        _save_auto_train_state_locked()
+
+
+def _resolve_faster_whisper_runtime() -> tuple[str, str]:
+    cuda_devices = 0
+    with contextlib.suppress(Exception):
+        import ctranslate2
+
+        cuda_devices = int(ctranslate2.get_cuda_device_count())
+    return ("cuda", "float16") if cuda_devices > 0 else ("cpu", "int8")
+
+
+def _load_faster_whisper_model(*, model_name: str, device: str, compute_type: str):
+    cache_key = (model_name, device, compute_type)
+    with FASTER_WHISPER_MODEL_LOCK:
+        cached = FASTER_WHISPER_MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            from faster_whisper import WhisperModel
+        except Exception as exc:
+            raise RuntimeError(f"faster-whisper is unavailable: {exc}") from exc
+
+        AUTO_TRAIN_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        model = WhisperModel(
+            model_name,
+            device=device,
+            compute_type=compute_type,
+            download_root=str(AUTO_TRAIN_MODEL_DIR),
+        )
+        FASTER_WHISPER_MODEL_CACHE.clear()
+        FASTER_WHISPER_MODEL_CACHE[cache_key] = model
+        return model
+
+
+def _transcribe_capture_with_faster_whisper(
+    audio_path: Path,
+    *,
+    model: str,
+    language: str,
+) -> str:
+    device, compute_type = _resolve_faster_whisper_runtime()
+    whisper_model = _load_faster_whisper_model(
+        model_name=model,
+        device=device,
+        compute_type=compute_type,
+    )
+    with FASTER_WHISPER_TRANSCRIBE_LOCK:
+        segments, _info = whisper_model.transcribe(
+            str(audio_path),
+            language=language or None,
+            beam_size=1,
+            condition_on_previous_text=False,
+        )
+        transcript = re.sub(
+            r"\s+",
+            " ",
+            " ".join(str(segment.text or "").strip() for segment in segments),
+        ).strip()
+    _record_stt_runtime(
+        engine=STT_ENGINE_FASTER_WHISPER,
+        model=model,
+        device=device,
+        compute_type=compute_type,
+    )
+    return transcript
+
+
 def _transcribe_capture_with_mlx(audio_path: Path, *, model: str, language: str) -> str:
     try:
         import mlx_whisper
@@ -766,12 +965,147 @@ def _transcribe_capture_with_mlx(audio_path: Path, *, model: str, language: str)
     if language:
         kwargs["language"] = language
     with _auto_train_model_environment():
-        try:
-            result = mlx_whisper.transcribe(str(audio_path), **kwargs)
-        except TypeError:
-            result = mlx_whisper.transcribe(str(audio_path), path_or_hf_repo=model)
+        with MLX_WHISPER_TRANSCRIBE_LOCK:
+            try:
+                result = mlx_whisper.transcribe(str(audio_path), **kwargs)
+            except TypeError:
+                result = mlx_whisper.transcribe(str(audio_path), path_or_hf_repo=model)
     text = result.get("text") if isinstance(result, dict) else result
-    return re.sub(r"\s+", " ", str(text or "")).strip()
+    transcript = re.sub(r"\s+", " ", str(text or "")).strip()
+    _record_stt_runtime(
+        engine=STT_ENGINE_MLX_WHISPER,
+        model=model,
+        device="mps",
+        compute_type="mlx",
+    )
+    return transcript
+
+
+def _parakeet_onnx_providers() -> List[str]:
+    try:
+        import onnxruntime as ort
+    except Exception as exc:
+        raise RuntimeError(f"onnxruntime is unavailable: {exc}") from exc
+    available = [str(value) for value in ort.get_available_providers()]
+    preferred = [
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    resolved = [provider for provider in preferred if provider in set(available)]
+    if not resolved:
+        raise RuntimeError("ONNX Runtime has no usable Core ML or CPU execution provider.")
+    return resolved
+
+
+def _load_parakeet_onnx_model():
+    try:
+        import onnx_asr
+    except Exception as exc:
+        raise RuntimeError(f"onnx-asr is unavailable: {exc}") from exc
+
+    providers = tuple(_parakeet_onnx_providers())
+    cache_key = (
+        DEFAULT_PARAKEET_ONNX_MODEL,
+        DEFAULT_PARAKEET_ONNX_QUANTIZATION,
+        providers,
+    )
+    with PARAKEET_ONNX_MODEL_LOCK:
+        cached = PARAKEET_ONNX_MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        with _auto_train_model_environment():
+            model = onnx_asr.load_model(
+                DEFAULT_PARAKEET_ONNX_MODEL,
+                str(AUTO_TRAIN_MODEL_DIR),
+                quantization=DEFAULT_PARAKEET_ONNX_QUANTIZATION,
+                providers=list(providers),
+            )
+        PARAKEET_ONNX_MODEL_CACHE.clear()
+        PARAKEET_ONNX_MODEL_CACHE[cache_key] = model
+        return model
+
+
+def _normalized_wav_float32(audio_path: Path):
+    import numpy as np
+
+    with wave.open(str(audio_path), "rb") as wav_file:
+        channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate = wav_file.getframerate()
+        frames = wav_file.readframes(wav_file.getnframes())
+    if sample_width != 2 or sample_rate != TARGET_SAMPLE_RATE or channels < 1:
+        raise RuntimeError("STT input must be 16 kHz, 16-bit PCM WAV audio.")
+    samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+    if channels > 1:
+        samples = samples.reshape((-1, channels)).mean(axis=1)
+    return samples / 32768.0
+
+
+def _transcribe_capture_with_parakeet(audio_path: Path, *, model: str, language: str) -> str:
+    parakeet_model = _load_parakeet_onnx_model()
+    kwargs: Dict[str, Any] = {
+        "sample_rate": TARGET_SAMPLE_RATE,
+        "channel": "mean",
+    }
+    if language:
+        kwargs["language"] = language
+    with PARAKEET_ONNX_TRANSCRIBE_LOCK:
+        result = parakeet_model.recognize(
+            _normalized_wav_float32(audio_path),
+            **kwargs,
+        )
+    providers = _parakeet_onnx_providers()
+    _record_stt_runtime(
+        engine=STT_ENGINE_PARAKEET_ONNX,
+        model=model,
+        device=providers[0],
+        compute_type=DEFAULT_PARAKEET_ONNX_QUANTIZATION,
+    )
+    return re.sub(r"\s+", " ", str(result or "")).strip()
+
+
+def _transcribe_capture(audio_path: Path, *, engine: str, language: str) -> str:
+    token = _normalize_stt_engine(engine)
+    model = _managed_stt_model(token, language)
+    if token == STT_ENGINE_FASTER_WHISPER:
+        return _transcribe_capture_with_faster_whisper(
+            audio_path,
+            model=model,
+            language=language,
+        )
+    if token == STT_ENGINE_PARAKEET_ONNX:
+        return _transcribe_capture_with_parakeet(
+            audio_path,
+            model=model,
+            language=language,
+        )
+    return _transcribe_capture_with_mlx(
+        audio_path,
+        model=model,
+        language=language,
+    )
+
+
+def _clear_stt_model_caches(*, keep_engine: str) -> None:
+    token = _normalize_stt_engine(keep_engine)
+    cleared = False
+    if token != STT_ENGINE_FASTER_WHISPER:
+        with FASTER_WHISPER_TRANSCRIBE_LOCK:
+            with FASTER_WHISPER_MODEL_LOCK:
+                cleared = bool(FASTER_WHISPER_MODEL_CACHE) or cleared
+                FASTER_WHISPER_MODEL_CACHE.clear()
+    if token != STT_ENGINE_PARAKEET_ONNX:
+        with PARAKEET_ONNX_TRANSCRIBE_LOCK:
+            with PARAKEET_ONNX_MODEL_LOCK:
+                cleared = bool(PARAKEET_ONNX_MODEL_CACHE) or cleared
+                PARAKEET_ONNX_MODEL_CACHE.clear()
+    if token != STT_ENGINE_MLX_WHISPER:
+        with contextlib.suppress(Exception):
+            import mlx.core as mlx_core
+
+            mlx_core.clear_cache()
+    if cleared:
+        gc.collect()
 
 
 def _queue_auto_review(file_name: str) -> bool:
@@ -879,12 +1213,17 @@ def _auto_review_capture(file_name: str) -> None:
         metadata["auto_review_status"] = "transcribing"
         metadata["auto_reviewed_at"] = _iso_now()
         metadata["auto_review_wake_phrase"] = wake_phrase
-        metadata["auto_review_stt_model"] = config["stt_model"]
+        stt_engine = _normalize_stt_engine(config.get("stt_engine"))
+        metadata["auto_review_stt_engine"] = stt_engine
+        metadata["auto_review_stt_model"] = _managed_stt_model(
+            stt_engine,
+            config.get("language"),
+        )
         _write_sidecar_json(audio_path, metadata)
 
-        transcript = _transcribe_capture_with_mlx(
+        transcript = _transcribe_capture(
             audio_path,
-            model=str(config["stt_model"]),
+            engine=stt_engine,
             language=str(config.get("language") or DEFAULT_LANGUAGE),
         )
         normalized = _normalize_transcript_text(transcript)
@@ -2146,22 +2485,26 @@ def _run_training_background(
         STATE["training"]["exit_code"] = None
         STATE["training"]["log_lines"] = []
         STATE["training"]["safe_word"] = safe_word
-        log_path = str(ROOT_DIR / "recorder_training.log")
+        log_path = str(DATA_DIR / "recorder_training.log")
         STATE["training"]["log_path"] = log_path
 
     _append_train_log(f"→ Running: {' '.join(cmd)}")
     _append_train_log(f"→ Language: {language}")
 
     try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
         if language != "en":
             _ensure_non_english_language_voices(language, _append_train_log)
 
         with open(log_path, "w", encoding="utf-8") as lf:
             env = os.environ.copy()
             env["MWW_LANGUAGE"] = language
+            env["WAKEWORD_TRAINER_SUPPORT_DIR"] = str(SUPPORT_DIR)
+            env["WAKEWORD_TRAINER_DATA_DIR"] = str(DATA_DIR)
+            env["TRAINED_WAKE_WORDS_DIR"] = str(TRAINED_WAKE_WORDS_DIR)
             proc = subprocess.Popen(
                 cmd,
-                cwd=str(ROOT_DIR),
+                cwd=str(DATA_DIR),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -2271,7 +2614,7 @@ def auto_train_status(request: Request):
     payload = _auto_train_status_payload()
     payload["ok"] = True
     payload["advertised_base_url"] = _advertised_base_url(request)
-    payload["stt_backend"] = "mlx-whisper"
+    payload["stt_backend"] = payload["config"].get("stt_engine")
     return payload
 
 
@@ -2305,6 +2648,8 @@ def update_auto_train(payload: Dict[str, Any] = None):
         )
         if schedule_changed or not AUTO_TRAIN_STATE.get("next_run_at"):
             _schedule_next_auto_run_locked()
+    if previous.get("stt_engine") != normalized.get("stt_engine"):
+        _clear_stt_model_caches(keep_engine=normalized["stt_engine"])
     if normalized["enabled"]:
         queued = _queue_pending_auto_reviews()
         AUTO_TRAIN_WAKE_EVENT.set()

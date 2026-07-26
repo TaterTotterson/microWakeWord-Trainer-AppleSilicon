@@ -17,9 +17,26 @@ auto_train_models/
 
 # Local caches and virtual environments
 .cache/
+.venv/
 .recorder-venv/
 macos/*/.build/
 macos/*/build/
+
+# Downloaded training dependencies and augmentation datasets
+micro-wake-word/
+piper-sample-generator/
+mit_rirs/
+audioset/
+audioset_16k/
+fma/
+fma_16k/
+wham/
+wham_16k/
+chime/
+chime_16k/
+negative_datasets/
+training_parameters.yaml
+fma_corrupted_files.log
 
 # macOS Finder metadata
 .DS_Store

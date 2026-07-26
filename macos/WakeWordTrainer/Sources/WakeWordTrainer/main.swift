@@ -35,6 +35,7 @@ private enum BackendState: Equatable {
 private final class BackendManager {
     let supportRoot: URL
     let appRoot: URL
+    let dataRoot: URL
     let sourceRoot: URL
     let venvDir: URL
     let pythonRoot: URL
@@ -65,6 +66,7 @@ private final class BackendManager {
         let home = FileManager.default.homeDirectoryForCurrentUser
         supportRoot = home.appendingPathComponent(".taterwakewordtrainer", isDirectory: true)
         appRoot = supportRoot.appendingPathComponent("app", isDirectory: true)
+        dataRoot = appRoot.appendingPathComponent("current", isDirectory: true)
         venvDir = supportRoot.appendingPathComponent("recorder-venv", isDirectory: true)
         pythonRoot = supportRoot.appendingPathComponent("python", isDirectory: true)
         managedPythonDir = pythonRoot.appendingPathComponent("cpython-3.11", isDirectory: true)
@@ -76,7 +78,7 @@ private final class BackendManager {
             sourceRoot = URL(fileURLWithPath: NSString(string: raw).expandingTildeInPath, isDirectory: true)
             usesBundledSource = false
         } else {
-            sourceRoot = appRoot.appendingPathComponent("current", isDirectory: true)
+            sourceRoot = dataRoot
             usesBundledSource = true
         }
     }
@@ -356,6 +358,7 @@ private final class BackendManager {
         let folders = [
             supportRoot,
             appRoot,
+            dataRoot,
             sourceRoot,
             venvDir,
             pythonRoot,
@@ -405,6 +408,7 @@ private final class BackendManager {
             ".github/",
             ".agents/",
             ".codex/",
+            ".cache/",
             ".recorder-venv/",
             ".venv/",
             "__pycache__/",
@@ -417,8 +421,12 @@ private final class BackendManager {
             "auto_train_config.json",
             "auto_train_state.json",
             "auto_train_models/",
+            "recorder_training.log",
+            "training_parameters.yaml",
+            "fma_corrupted_files.log",
             "trained_wake_words/",
             "trained_models/",
+            "output/",
             "generated_samples/",
             "generated_augmented_features/",
             "personal_augmented_features/",
@@ -426,11 +434,14 @@ private final class BackendManager {
             "micro-wake-word/",
             "piper-sample-generator/",
             "mit_rirs/",
+            "negative_datasets/",
             "audioset/",
             "audioset_16k/",
             "fma/",
             "fma_16k/",
+            "wham/",
             "wham_16k/",
+            "chime/",
             "chime_16k/"
         ]
         for value in excludes {
@@ -660,8 +671,12 @@ private final class BackendManager {
         environment["REC_HOST"] = "0.0.0.0"
         environment["REC_PORT"] = "\(trainerPort)"
         environment["WAKEWORD_TRAINER_SUPPORT_DIR"] = supportRoot.path
+        environment["WAKEWORD_TRAINER_DATA_DIR"] = dataRoot.path
         environment["WAKEWORD_TRAINER_TRAINING_LOCK_FILE"] = supportRoot
             .appendingPathComponent("training.lock")
+            .path
+        environment["TRAIN_SCRIPT"] = sourceRoot
+            .appendingPathComponent("train_microwakeword_macos.sh")
             .path
         return environment
     }
