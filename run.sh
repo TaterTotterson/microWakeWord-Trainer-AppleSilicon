@@ -32,6 +32,17 @@ FASTAPI_VERSION="${REC_FASTAPI_VERSION:-0.115.6}"
 UVICORN_VERSION="${REC_UVICORN_VERSION:-0.30.6}"
 PY_MULTIPART_VERSION="${REC_PY_MULTIPART_VERSION:-0.0.9}"
 
+UI_DEPENDENCIES=(
+  "fastapi==${FASTAPI_VERSION}"
+  "uvicorn[standard]==${UVICORN_VERSION}"
+  "python-multipart==${PY_MULTIPART_VERSION}"
+  "silero-vad>=5.0.0"
+  "numpy>=1.24.0"
+  "mlx-whisper"
+  "faster-whisper>=1.0.0"
+  "onnx-asr[hub]>=0.12.0"
+)
+
 echo "🎙️ microWakeWord Trainer UI (local)"
 echo "→ SOURCE: $ROOT_DIR"
 echo "→ DATA: $DATA_DIR"
@@ -39,16 +50,15 @@ echo "→ VENV: $VENV_DIR"
 echo "→ PYTHON_BIN: $PYTHON_BIN"
 
 install_ui_deps() {
-  # Core server deps
-  $PIP install \
-    "fastapi==${FASTAPI_VERSION}" \
-    "uvicorn[standard]==${UVICORN_VERSION}" \
-    "python-multipart==${PY_MULTIPART_VERSION}" \
-    "silero-vad>=5.0.0" \
-    "numpy>=1.24.0" \
-    "mlx-whisper" \
-    "faster-whisper>=1.0.0" \
-    "onnx-asr[hub]>=0.12.0"
+  $PIP install "${UI_DEPENDENCIES[@]}"
+}
+
+dependency_fingerprint() {
+  printf '%s\n' "${UI_DEPENDENCIES[@]}" | /usr/bin/shasum -a 256 | awk '{print $1}'
+}
+
+record_dependency_fingerprint() {
+  dependency_fingerprint > "$PIN_FILE"
 }
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -67,16 +77,22 @@ fi
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 
-# Install pinned deps once
-if [[ ! -f "$PIN_FILE" ]]; then
-  echo "🧹 Fresh trainer UI venv → installing pinned dependencies"
+# Install dependencies whenever their specification changes. Existing empty
+# marker files from older releases intentionally trigger one refresh.
+EXPECTED_DEPENDENCY_FINGERPRINT="$(dependency_fingerprint)"
+INSTALLED_DEPENDENCY_FINGERPRINT="$(tr -d '[:space:]' < "$PIN_FILE" 2>/dev/null || true)"
+if [[ "$INSTALLED_DEPENDENCY_FINGERPRINT" != "$EXPECTED_DEPENDENCY_FINGERPRINT" ]]; then
+  if [[ -f "$PIN_FILE" ]]; then
+    echo "📦 Trainer UI dependencies changed → refreshing recorder dependencies"
+  else
+    echo "🧹 Fresh trainer UI venv → installing pinned dependencies"
+  fi
   $PIP install -U pip setuptools wheel
 
   install_ui_deps
-
-  touch "$PIN_FILE"
+  record_dependency_fingerprint
 else
-  echo "✅ Reusing existing .recorder-venv (no upgrades)"
+  echo "✅ Reusing existing .recorder-venv (dependencies match)"
   if ! "$PY" - "$FASTAPI_VERSION" "$UVICORN_VERSION" "$PY_MULTIPART_VERSION" <<'PY' >/dev/null 2>&1
 import importlib.metadata as md
 import sys
@@ -120,6 +136,7 @@ PY
   then
     echo "📦 UI dependencies missing or stale → installing recorder dependencies"
     install_ui_deps
+    record_dependency_fingerprint
   fi
 fi
 

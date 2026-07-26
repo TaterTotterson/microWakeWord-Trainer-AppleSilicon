@@ -161,6 +161,7 @@ private final class BackendManager {
             terminateBackendProcessNow(pid: pid)
         }
 
+        detachOutputPipe()
         if let process, !process.isRunning {
             process.waitUntilExit()
         }
@@ -182,6 +183,7 @@ private final class BackendManager {
             appendLauncherLog("Managed backend pid \(process.processIdentifier) did not exit; sending SIGKILL.\n")
             Darwin.kill(process.processIdentifier, SIGKILL)
         }
+        detachOutputPipe()
         process.waitUntilExit()
         terminateCapturedDescendants(descendants, naturalExitGrace: descendantExitGrace)
     }
@@ -621,8 +623,7 @@ private final class BackendManager {
         process.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.outputPipe?.fileHandleForReading.readabilityHandler = nil
-                self.outputPipe = nil
+                self.detachOutputPipe()
                 self.closeLogHandle()
                 self.process = nil
                 if proc.terminationStatus == 0 {
@@ -704,7 +705,10 @@ private final class BackendManager {
         process.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [weak self] reader in
             let data = reader.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                reader.readabilityHandler = nil
+                return
+            }
             try? handle.write(contentsOf: data)
             if let text = String(data: data, encoding: .utf8) {
                 self?.appendLog(text)
@@ -713,6 +717,11 @@ private final class BackendManager {
             }
         }
         return pipe
+    }
+
+    private func detachOutputPipe() {
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        outputPipe = nil
     }
 
     private func appendLog(_ text: String) {
@@ -996,7 +1005,10 @@ private final class BackendManager {
         process.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [weak self] reader in
             let data = reader.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                reader.readabilityHandler = nil
+                return
+            }
             self?.appendLog(String(decoding: data, as: UTF8.self))
         }
 

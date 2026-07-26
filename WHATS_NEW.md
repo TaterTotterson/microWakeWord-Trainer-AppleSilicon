@@ -1,3 +1,4 @@
-- Added a simple Auto Training STT engine selector with Faster Whisper as the recommended default, Parakeet ONNX, and MLX Whisper.
-- Added managed, language-aware STT models so users choose an engine without manually entering model names or runtime settings.
-- Added automatic runtime selection and model-cache cleanup when switching engines, including Core ML/CPU support for Parakeet and safe local execution for Faster Whisper.
+- Fixed first-run Parakeet ONNX setup failing when its empty model directory was mistaken for a complete offline model.
+- Parakeet now downloads or resumes its required INT8 snapshot before loading, then reuses a complete local snapshot without Hub access.
+- The macOS launcher now refreshes its private recorder dependencies whenever their specification changes, so existing installations receive newly required STT packages.
+- Improved updater and shutdown reliability by detaching completed backend output streams before waiting for the trainer process to exit.
