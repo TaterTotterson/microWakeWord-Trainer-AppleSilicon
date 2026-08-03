@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROGDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="$(cd "${PROGDIR}/.." && pwd)"
+SUPPORT_DIR="${WAKEWORD_TRAINER_SUPPORT_DIR:-${HOME}/.taterwakewordtrainer}"
+DATA_DIR="${WAKEWORD_TRAINER_DATA_DIR:-${SUPPORT_DIR}/app/current}"
+ENGINE=""
+
+for argument in "$@"; do
+  case "${argument}" in
+    --engine=*) ENGINE="${argument#*=}" ;;
+    --data-dir=*) DATA_DIR="${argument#*=}" ;;
+    *)
+      echo "Unknown argument: ${argument}" >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "${ENGINE}" in
+  omnivoice|qwen3|moss) ;;
+  *)
+    echo "Usage: setup_modern_tts_envs --engine=<omnivoice|qwen3|moss> [--data-dir=PATH]" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "❌ Modern Apple TTS environments require macOS." >&2
+  exit 1
+fi
+
+PYTHON_BIN="${MWW_TTS_PYTHON:-${PYTHON_BIN:-/opt/homebrew/bin/python3.11}}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  PYTHON_BIN="$(command -v python3.11 || command -v python3 || true)"
+fi
+if [[ -z "${PYTHON_BIN}" ]]; then
+  echo "❌ Python 3.10 or newer is required for modern TTS." >&2
+  exit 1
+fi
+
+PYTHON_ARCH="$("${PYTHON_BIN}" -c 'import platform; print(platform.machine())')"
+if [[ "${PYTHON_ARCH}" != "arm64" ]]; then
+  echo "❌ ${PYTHON_BIN} is ${PYTHON_ARCH}; an arm64 Python is required for MPS/MLX." >&2
+  exit 1
+fi
+
+TTS_ROOT="${DATA_DIR}/tts-envs"
+VENV="${TTS_ROOT}/${ENGINE}"
+MARKER="${VENV}/.stack-version"
+STACK_VERSION="modern-tts-apple-v1"
+MLX_AUDIO_COMMIT="223afd602c6d583455bdb9f181b91fc090f4aff9"
+OMNIVOICE_COMMIT="28bc0889d92110491d726a9c79f26a895db5a074"
+mkdir -p "${TTS_ROOT}" "${DATA_DIR}/.cache/huggingface"
+
+case "${ENGINE}" in
+  omnivoice)
+    STACK_ID="${STACK_VERSION}:omnivoice-${OMNIVOICE_COMMIT}:torch-2.8.0"
+    ;;
+  qwen3|moss)
+    STACK_ID="${STACK_VERSION}:${ENGINE}:mlx-audio-${MLX_AUDIO_COMMIT}"
+    ;;
+esac
+
+environment_ready() {
+  [[ -x "${VENV}/bin/python" ]] || return 1
+  [[ -f "${MARKER}" ]] || return 1
+  [[ "$(<"${MARKER}")" == "${STACK_ID}" ]] || return 1
+  if [[ "${ENGINE}" == "omnivoice" ]]; then
+    "${VENV}/bin/python" - <<'PY' >/dev/null 2>&1
+import omnivoice
+import torch
+
+if torch.backends.mps.is_available():
+    torch.zeros(1, device="mps")
+PY
+  else
+    "${VENV}/bin/python" - <<'PY' >/dev/null 2>&1
+import mlx.core as mx
+import mlx_audio
+
+mx.eval(mx.array([1.0]))
+PY
+  fi
+}
+
+if environment_ready; then
+  echo "✅ Reusing ${ENGINE} TTS environment: ${VENV}"
+  exit 0
+fi
+
+echo "===== Preparing isolated ${ENGINE} Apple TTS environment ====="
+if [[ -e "${VENV}" ]]; then
+  rm -rf "${VENV}"
+fi
+"${PYTHON_BIN}" -m venv "${VENV}"
+PY="${VENV}/bin/python"
+"${PY}" -m pip install -U pip setuptools wheel
+
+if [[ "${ENGINE}" == "omnivoice" ]]; then
+  echo "→ Installing OmniVoice with the official Apple MPS-compatible torch stack"
+  "${PY}" -m pip install "torch==2.8.0" "torchaudio==2.8.0"
+  "${PY}" -m pip install \
+    "git+https://github.com/k2-fsa/OmniVoice.git@${OMNIVOICE_COMMIT}" \
+    "huggingface_hub[hf_xet]"
+else
+  echo "→ Installing MLX-Audio for ${ENGINE}"
+  "${PY}" -m pip install \
+    "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@${MLX_AUDIO_COMMIT}" \
+    "huggingface_hub[hf_xet]" \
+    soundfile
+fi
+
+printf '%s\n' "${STACK_ID}" > "${MARKER}"
+if ! environment_ready; then
+  echo "❌ ${ENGINE} environment failed its Apple accelerator/import check." >&2
+  exit 1
+fi
+
+if [[ "${ENGINE}" == "omnivoice" ]]; then
+  "${PY}" - <<'PY'
+import torch
+print("✅ OmniVoice ready; MPS available:", torch.backends.mps.is_available())
+PY
+else
+  echo "✅ ${ENGINE} ready on Apple MLX"
+fi
+echo "✅ ${ENGINE} TTS environment ready: ${VENV}"

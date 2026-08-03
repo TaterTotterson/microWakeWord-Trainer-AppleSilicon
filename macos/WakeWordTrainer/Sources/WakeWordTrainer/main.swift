@@ -435,6 +435,8 @@ private final class BackendManager {
             "reviewed_negative_features/",
             "micro-wake-word/",
             "piper-sample-generator/",
+            "tts-envs/",
+            "voice-bank/",
             "mit_rirs/",
             "negative_datasets/",
             "audioset/",

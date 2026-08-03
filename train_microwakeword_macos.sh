@@ -3,10 +3,10 @@
 # One-shot: setup (idempotent) + run pipeline on Apple Silicon (macOS).
 # Usage:
 #   ./train_microwakeword_macos.sh "hey_tater" 50000 100 \
-#       --language en \
+#       --language en --tts-mode hybrid \
 #       --piper-model /path/to/voice1.onnx --piper-model /path/to/voice2.pt
 #
-# If no --piper-model is given, we use language-aware defaults.
+# Hybrid uses Piper as a fourth source when a compatible model is present.
 
 set -euo pipefail
 
@@ -27,6 +27,8 @@ BATCH_SIZE="${3:-100}"
 
 # Default language can be overridden by --language or MWW_LANGUAGE
 LANGUAGE="${MWW_LANGUAGE:-en}"
+TTS_MODE="${MWW_TTS_MODE:-hybrid}"
+TTS_VOICE_COUNT="${MWW_TTS_VOICE_COUNT:-128}"
 
 # Collect optional flags
 PIPER_MODELS=()
@@ -34,6 +36,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --piper-model) PIPER_MODELS+=("$2"); shift 2 ;;
     --language) LANGUAGE="${2:-}"; shift 2 ;;
+    --tts-mode) TTS_MODE="${2:-}"; shift 2 ;;
+    --tts-voice-count) TTS_VOICE_COUNT="${2:-}"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -44,6 +48,18 @@ if [[ -z "$LANGUAGE" ]]; then
 fi
 export MWW_LANGUAGE="$LANGUAGE"
 echo "🌐 Training language: $LANGUAGE"
+
+TTS_MODE="$(echo "${TTS_MODE}" | tr '[:upper:]' '[:lower:]')"
+case "$TTS_MODE" in
+  modern|hybrid|piper) ;;
+  *) echo "❌ Invalid TTS mode '${TTS_MODE}'. Choose modern, hybrid, or piper."; exit 1 ;;
+esac
+if [[ ! "$TTS_VOICE_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "❌ --tts-voice-count must be a positive integer."
+  exit 1
+fi
+export MWW_TTS_MODE="$TTS_MODE" MWW_TTS_VOICE_COUNT="$TTS_VOICE_COUNT"
+echo "🗣️  TTS mode: $TTS_MODE (direct final-sample generation; no reusable voice bank)"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
@@ -253,9 +269,18 @@ fi
 
 "$PY" -m pip install -q -e ./micro-wake-word || true
 
-# piper-sample-generator (TaterTotterson fork)
-bash "$SOURCE_DIR/scripts_macos/get_piper_generator.sh"
-ensure_torch_audio_stack
+# Piper is no longer installed for the default modern stack. It remains
+# available as an explicit compatibility/fallback option.
+if [[ "$TTS_MODE" == "piper" ]]; then
+  bash "$SOURCE_DIR/scripts_macos/get_piper_generator.sh"
+  ensure_torch_audio_stack
+elif [[ "$TTS_MODE" == "hybrid" ]]; then
+  if bash "$SOURCE_DIR/scripts_macos/get_piper_generator.sh"; then
+    ensure_torch_audio_stack
+  else
+    echo "⚠️  Piper setup failed; hybrid mode will continue with modern TTS only."
+  fi
+fi
 
 # ── verify Metal GPU (optional) ───────────────────────────────────────────────
 "$PY" - <<'PY'
@@ -267,44 +292,52 @@ if not any(d.device_type == "GPU" for d in devs):
 PY
 
 # ── export for inline python ──────────────────────────────────────────────────
-export TARGET_WORD MAX_TTS_SAMPLES BATCH_SIZE LANGUAGE MWW_LANGUAGE
+export TARGET_WORD MAX_TTS_SAMPLES BATCH_SIZE LANGUAGE MWW_LANGUAGE TTS_MODE TTS_VOICE_COUNT
 
-# ── Ensure at least one model is provided (language-aware default) ────────────
+# ── Resolve optional Piper compatibility voices ──────────────────────────────
 DEFAULT_MODEL_PT="piper-sample-generator/models/en_US-libritts_r-medium.pt"
-if [[ ${#PIPER_MODELS[@]} -eq 0 ]]; then
+if [[ "$TTS_MODE" == "modern" && ${#PIPER_MODELS[@]} -gt 0 ]]; then
+  echo "⚠️  --piper-model is ignored in modern mode. Use --tts-mode hybrid or piper."
+  PIPER_MODELS=()
+elif [[ "$TTS_MODE" != "modern" && ${#PIPER_MODELS[@]} -eq 0 ]]; then
   if [[ "$LANGUAGE" == "en" ]]; then
     echo "ℹ️  No --piper-model provided; using default English voice:"
     echo "    $DEFAULT_MODEL_PT"
     mkdir -p "$(dirname "$DEFAULT_MODEL_PT")"
     if [[ ! -f "$DEFAULT_MODEL_PT" ]]; then
-      wget -q -O "$DEFAULT_MODEL_PT" \
-        "https://github.com/TaterTotterson/piper-sample-generator/releases/download/models/en_US-libritts_r-medium.pt"
+      if ! wget -q -O "$DEFAULT_MODEL_PT" \
+        "https://github.com/TaterTotterson/piper-sample-generator/releases/download/models/en_US-libritts_r-medium.pt"; then
+        rm -f "$DEFAULT_MODEL_PT"
+        if [[ "$TTS_MODE" == "piper" ]]; then
+          echo "❌ Could not download the required English Piper voice."
+          exit 1
+        fi
+        echo "⚠️  Could not download the English Piper voice; hybrid mode will use modern TTS only."
+      fi
     fi
-    PIPER_MODELS=("$DEFAULT_MODEL_PT")
+    if [[ -f "$DEFAULT_MODEL_PT" ]]; then
+      PIPER_MODELS=("$DEFAULT_MODEL_PT")
+    fi
   else
     shopt -s nullglob
     language_voice_models=(piper-sample-generator/voices/"${LANGUAGE}"_*.onnx)
     shopt -u nullglob
     if [[ ${#language_voice_models[@]} -eq 0 ]]; then
-      echo "❌ No Piper ONNX voice models found for language '${LANGUAGE}'."
-      echo "   Expected files matching: piper-sample-generator/voices/${LANGUAGE}_*.onnx"
-      echo "   Add voice files or choose English (en)."
-      exit 1
+      if [[ "$TTS_MODE" == "piper" ]]; then
+        echo "❌ No Piper ONNX voice models found for language '${LANGUAGE}'."
+        echo "   Expected files matching: piper-sample-generator/voices/${LANGUAGE}_*.onnx"
+        exit 1
+      fi
+      echo "⚠️  No Piper voice found for '${LANGUAGE}'; hybrid mode will use modern engines only."
+    else
+      echo "ℹ️  Using ${#language_voice_models[@]} Piper compatibility voice(s) for '${LANGUAGE}':"
+      for vf in "${language_voice_models[@]}"; do
+        echo "    $vf"
+      done
+      PIPER_MODELS=("${language_voice_models[@]}")
     fi
-    echo "ℹ️  No --piper-model provided; using ${#language_voice_models[@]} voice model(s) for language '${LANGUAGE}':"
-    for vf in "${language_voice_models[@]}"; do
-      echo "    $vf"
-    done
-    PIPER_MODELS=("${language_voice_models[@]}")
   fi
 fi
-
-# ── Pass models to Python via env ─────────────────────────────────────────────
-PIPER_MODELS_CSV=""
-if [[ ${#PIPER_MODELS[@]} -gt 0 ]]; then
-  PIPER_MODELS_CSV=$(IFS=,; echo "${PIPER_MODELS[*]}")
-fi
-export PIPER_MODELS_CSV
 
 count_matching_files() {
   local dir="$1"
@@ -351,7 +384,15 @@ compute_sample_cache_key() {
     printf 'samples=%s\n' "$MAX_TTS_SAMPLES"
     printf 'batch=%s\n' "$BATCH_SIZE"
     printf 'language=%s\n' "$LANGUAGE"
-    stat -f 'generator_wrapper=%N:%m:%z' "$SOURCE_DIR/scripts_macos/run_generator_with_progress.py"
+    printf 'tts_mode=%s\n' "$TTS_MODE"
+    for generator_file in \
+      "$SOURCE_DIR/tts_config.py" \
+      "$SOURCE_DIR/scripts_macos/tts_generate_samples.py" \
+      "$SOURCE_DIR/scripts_macos/tts_qwen_mlx_worker.py" \
+      "$SOURCE_DIR/scripts_macos/tts_moss_mlx_worker.py" \
+      "$SOURCE_DIR/scripts_macos/setup_modern_tts_envs"; do
+      stat -f 'generator=%N:%m:%z' "$generator_file"
+    done
     for model_path in "${PIPER_MODELS[@]}"; do
       if [[ -e "$model_path" ]]; then
         stat -f 'model=%N:%m:%z' "$model_path"
@@ -429,28 +470,21 @@ else
 fi
 
 if [[ "$sample_cache_hit" != "true" ]]; then
-  echo "🎤 Generating ${MAX_TTS_SAMPLES} samples for '${TARGET_WORD}' (batch ${BATCH_SIZE})…"
-  LENGTH_SCALES=(0.85 0.95 1.0 1.05 1.15)
+  echo "🎤 Generating ${MAX_TTS_SAMPLES} samples for '${TARGET_WORD}' with ${TTS_MODE} TTS…"
   generator_cmd=(
     "$PY"
-    "$SOURCE_DIR/scripts_macos/run_generator_with_progress.py"
-    "--generator" "piper-sample-generator/generate_samples.py"
-    "--output-dir" "generated_samples"
-    "--max-samples" "$MAX_TTS_SAMPLES"
-    "--"
+    "$SOURCE_DIR/scripts_macos/tts_generate_samples.py"
     "$TARGET_WORD"
-    "--max-samples" "$MAX_TTS_SAMPLES"
+    "--language" "$LANGUAGE"
+    "--tts-mode" "$TTS_MODE"
+    "--samples" "$MAX_TTS_SAMPLES"
     "--batch-size" "$BATCH_SIZE"
+    "--voice-count" "$TTS_VOICE_COUNT"
+    "--data-dir" "$WORK_DIR"
     "--output-dir" "generated_samples"
-    "--length-scales"
   )
-
-  for scale in "${LENGTH_SCALES[@]}"; do
-    generator_cmd+=("$scale")
-  done
-
   for model_path in "${PIPER_MODELS[@]}"; do
-    generator_cmd+=("--model" "$model_path")
+    generator_cmd+=("--piper-model" "$model_path")
   done
 
   printf 'CMD:'

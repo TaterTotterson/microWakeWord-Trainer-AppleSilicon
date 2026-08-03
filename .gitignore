@@ -40,6 +40,7 @@ fma_corrupted_files.log
 
 # macOS Finder metadata
 .DS_Store
+frontend/node_modules/
 
 # Python cache/bytecode
 __pycache__/

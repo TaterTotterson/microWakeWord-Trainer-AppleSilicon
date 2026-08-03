@@ -12,6 +12,7 @@ import json
 import secrets
 import signal
 import socket
+import stat as stat_module
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT_DIR = Path(__file__).resolve().parent
+
+from tts_config import (
+    COMMON_OMNIVOICE_LANGUAGES,
+    DEFAULT_TTS_MODE,
+    ENGINE_MOSS,
+    ENGINE_OMNIVOICE,
+    ENGINE_PIPER,
+    ENGINE_QWEN3,
+    MOSS_LANGUAGES,
+    OMNIVOICE_LANGUAGE_ALIASES,
+    QWEN_LANGUAGES,
+    normalize_tts_mode,
+    parse_omnivoice_catalog,
+    quality_for_engines,
+)
+
 SUPPORT_DIR = Path(
     os.environ.get(
         "WAKEWORD_TRAINER_SUPPORT_DIR",
@@ -96,7 +113,24 @@ PIPER_CATALOG_CACHE_FILE = Path(
         str(DATA_DIR / ".cache" / "piper_voices_catalog.json"),
     )
 ).resolve()
+OMNIVOICE_LANGUAGES_URL = os.environ.get(
+    "OMNIVOICE_LANGUAGES_URL",
+    "https://raw.githubusercontent.com/k2-fsa/OmniVoice/main/docs/languages.md",
+)
+OMNIVOICE_CATALOG_CACHE_TTL_SECONDS = int(
+    os.environ.get("OMNIVOICE_CATALOG_CACHE_TTL_SECONDS", "86400")
+)
+OMNIVOICE_CATALOG_CACHE_FILE = Path(
+    os.environ.get(
+        "OMNIVOICE_CATALOG_CACHE_FILE",
+        str(DATA_DIR / ".cache" / "omnivoice_languages.json"),
+    )
+).resolve()
 DEFAULT_LANGUAGE = os.environ.get("MWW_LANGUAGE", "en")
+DEFAULT_SERVER_TTS_MODE = normalize_tts_mode(
+    os.environ.get("MWW_TTS_MODE", DEFAULT_TTS_MODE)
+)
+DEFAULT_TTS_VOICE_COUNT = max(1, int(os.environ.get("MWW_TTS_VOICE_COUNT", "128")))
 
 TAKES_PER_SPEAKER_DEFAULT = int(os.environ.get("REC_TAKES_PER_SPEAKER", "10"))
 SPEAKERS_TOTAL_DEFAULT = int(os.environ.get("REC_SPEAKERS_TOTAL", "1"))
@@ -204,6 +238,7 @@ STATE: Dict[str, Any] = {
     "raw_phrase": None,
     "safe_word": None,
     "language": DEFAULT_LANGUAGE,
+    "tts_mode": DEFAULT_SERVER_TTS_MODE,
 
     # multi-speaker
     "speakers_total": SPEAKERS_TOTAL_DEFAULT,
@@ -224,7 +259,9 @@ STATE: Dict[str, Any] = {
 
 STATE_LOCK = threading.Lock()
 SAMPLES_LOCK = threading.Lock()
+DATA_MANAGEMENT_LOCK = threading.RLock()
 PIPER_CATALOG_LOCK = threading.Lock()
+OMNIVOICE_CATALOG_LOCK = threading.Lock()
 AUTO_TRAIN_LOCK = threading.RLock()
 AUTO_TRAIN_WAKE_EVENT = threading.Event()
 AUTO_TRAIN_STOP_EVENT = threading.Event()
@@ -233,6 +270,7 @@ AUTO_TRAIN_QUEUED_FILES: set[str] = set()
 AUTO_TRAIN_WORKER: threading.Thread | None = None
 TRAINING_RUNTIME_LOCK = threading.RLock()
 TRAINING_SHUTDOWN_EVENT = threading.Event()
+TRAINING_STOP_EVENT = threading.Event()
 TRAINING_PROCESS: subprocess.Popen | None = None
 TRAINING_THREAD: threading.Thread | None = None
 AUTO_TRAIN_RUNTIME: Dict[str, Any] = {
@@ -253,6 +291,183 @@ PIPER_CATALOG_CACHE: Dict[str, Any] = {
     "fetched_at": 0.0,
     "entries": None,
 }
+OMNIVOICE_CATALOG_CACHE: Dict[str, Any] = {
+    "fetched_at": 0.0,
+    "entries": None,
+}
+
+
+def _managed_data_registry() -> List[Dict[str, Any]]:
+    """Return the exact trainer-owned paths that the Data tab may remove."""
+    rebuild = "The trainer will rebuild this automatically when it is needed again."
+    redownload = "The trainer will download this again when it is needed."
+    irreplaceable = "These recordings are not generated and cannot be restored automatically."
+    return [
+        {"id": "personal_samples", "label": "Personal positive samples", "category": "Recordings", "description": "User recordings and imported positive wake-word clips.", "paths": [PERSONAL_DIR], "rebuild_note": irreplaceable},
+        {"id": "negative_samples", "label": "Reviewed negative samples", "category": "Recordings", "description": "Reviewed false wakes and other hard-negative recordings.", "paths": [NEGATIVE_DIR], "rebuild_note": irreplaceable},
+        {"id": "captured_audio", "label": "Captured-audio inbox", "category": "Recordings", "description": "Unreviewed audio received from Tater satellites.", "paths": [CAPTURED_DIR], "rebuild_note": irreplaceable},
+        {"id": "trim_history", "label": "Audio trim history", "category": "Recordings", "description": "Original audio retained so sample trims can be reverted.", "paths": [TRIM_HISTORY_DIR], "rebuild_note": "Deleting this removes the ability to revert existing trims."},
+
+        {"id": "generated_samples", "label": "Generated wake-word samples", "category": "Generated training data", "description": "The direct TTS corpus used for the current wake word.", "paths": [DATA_DIR / "generated_samples"], "rebuild_note": rebuild},
+        {"id": "generation_staging", "label": "TTS generation staging", "category": "Generated training data", "description": "Raw, quality-check, and partial files from an in-progress or interrupted generation.", "paths": [DATA_DIR / ".wake_word_samples.build"], "rebuild_note": rebuild},
+        {"id": "generated_features", "label": "Generated augmented features", "category": "Generated training data", "description": "Augmented model features produced from generated speech.", "paths": [DATA_DIR / "generated_augmented_features"], "rebuild_note": rebuild},
+        {"id": "personal_features", "label": "Personal augmented features", "category": "Generated training data", "description": "Training features derived from personal positive samples.", "paths": [DATA_DIR / "personal_augmented_features"], "rebuild_note": rebuild},
+        {"id": "reviewed_negative_features", "label": "Reviewed-negative features", "category": "Generated training data", "description": "Training features derived from reviewed false wakes.", "paths": [DATA_DIR / "reviewed_negative_features"], "rebuild_note": rebuild},
+
+        {"id": "negative_speech", "label": "Speech negatives", "category": "Downloaded training datasets", "description": "Stock non-wake speech features used to reduce false activations.", "paths": [DATA_DIR / "negative_datasets" / "speech"], "rebuild_note": redownload},
+        {"id": "negative_dinner_party", "label": "Dinner-party negatives", "category": "Downloaded training datasets", "description": "Overlapping conversational noise used during training.", "paths": [DATA_DIR / "negative_datasets" / "dinner_party"], "rebuild_note": redownload},
+        {"id": "negative_no_speech", "label": "No-speech negatives", "category": "Downloaded training datasets", "description": "Ambient non-speech features used during training.", "paths": [DATA_DIR / "negative_datasets" / "no_speech"], "rebuild_note": redownload},
+        {"id": "negative_dinner_eval", "label": "Dinner-party evaluation set", "category": "Downloaded training datasets", "description": "Held-out conversational audio used to evaluate false activations.", "paths": [DATA_DIR / "negative_datasets" / "dinner_party_eval"], "rebuild_note": redownload},
+        {"id": "mit_rirs", "label": "MIT room impulse responses", "category": "Downloaded training datasets", "description": "Room acoustics used to make generated voices more realistic.", "paths": [DATA_DIR / "mit_rirs"], "rebuild_note": redownload},
+        {"id": "audioset_source", "label": "AudioSet source download", "category": "Downloaded training datasets", "description": "Original downloaded AudioSet material retained for preparation.", "paths": [DATA_DIR / "audioset"], "rebuild_note": redownload},
+        {"id": "audioset_16k", "label": "AudioSet 16 kHz training audio", "category": "Downloaded training datasets", "description": "Prepared AudioSet audio used for augmentation.", "paths": [DATA_DIR / "audioset_16k"], "rebuild_note": redownload},
+        {"id": "fma_source", "label": "FMA source download", "category": "Downloaded training datasets", "description": "Original downloaded Free Music Archive material.", "paths": [DATA_DIR / "fma"], "rebuild_note": redownload},
+        {"id": "fma_16k", "label": "FMA 16 kHz training audio", "category": "Downloaded training datasets", "description": "Prepared music audio used for augmentation.", "paths": [DATA_DIR / "fma_16k"], "rebuild_note": redownload},
+        {"id": "wham_source", "label": "WHAM! source download", "category": "Downloaded training datasets", "description": "Original downloaded WHAM! background-noise material.", "paths": [DATA_DIR / "wham"], "rebuild_note": redownload},
+        {"id": "wham_16k", "label": "WHAM! 16 kHz training audio", "category": "Downloaded training datasets", "description": "Prepared WHAM! noise used for augmentation.", "paths": [DATA_DIR / "wham_16k"], "rebuild_note": redownload},
+        {"id": "chime_source", "label": "CHiME source download", "category": "Downloaded training datasets", "description": "Original downloaded CHiME household-noise material.", "paths": [DATA_DIR / "chime"], "rebuild_note": redownload},
+        {"id": "chime_16k", "label": "CHiME 16 kHz training audio", "category": "Downloaded training datasets", "description": "Prepared CHiME noise used for augmentation.", "paths": [DATA_DIR / "chime_16k"], "rebuild_note": redownload},
+
+        {"id": "omnivoice_environment", "label": "OmniVoice engine", "category": "Voice and speech models", "description": "The isolated OmniVoice runtime and installed packages.", "paths": [DATA_DIR / "tts-envs" / "omnivoice"], "rebuild_note": redownload},
+        {"id": "qwen_environment", "label": "Qwen3-TTS engine", "category": "Voice and speech models", "description": "The isolated Qwen3-TTS runtime and installed packages.", "paths": [DATA_DIR / "tts-envs" / "qwen3"], "rebuild_note": redownload},
+        {"id": "moss_environment", "label": "MOSS-TTS engine", "category": "Voice and speech models", "description": "The isolated MOSS-TTS runtime and installed packages.", "paths": [DATA_DIR / "tts-envs" / "moss"], "rebuild_note": redownload},
+        {"id": "tts_model_cache", "label": "TTS model downloads", "category": "Voice and speech models", "description": "Hugging Face model weights shared by the modern TTS providers.", "paths": [DATA_DIR / ".cache" / "huggingface"], "rebuild_note": redownload},
+        {"id": "piper_models", "label": "Piper voice models", "category": "Voice and speech models", "description": "Downloaded Piper model weights used by hybrid and legacy generation.", "paths": [PIPER_ROOT / "models"], "rebuild_note": redownload},
+        {"id": "piper_voices", "label": "Additional Piper voices", "category": "Voice and speech models", "description": "Language-specific Piper voices selected by the trainer.", "paths": [PIPER_VOICES_DIR], "rebuild_note": redownload},
+        {"id": "stt_models", "label": "Auto-training STT models", "category": "Voice and speech models", "description": "Whisper, Parakeet, and other speech-recognition model downloads.", "paths": [AUTO_TRAIN_MODEL_DIR], "rebuild_note": redownload},
+        {"id": "provider_catalogs", "label": "Voice-provider catalogs", "category": "Voice and speech models", "description": "Cached OmniVoice language and Piper voice listings.", "paths": [OMNIVOICE_CATALOG_CACHE_FILE, PIPER_CATALOG_CACHE_FILE], "rebuild_note": redownload},
+        {"id": "voice_bank", "label": "Legacy voice-bank references", "category": "Voice and speech models", "description": "Reference clips left by older voice-bank generation runs.", "paths": [DATA_DIR / "voice-bank"], "rebuild_note": rebuild},
+
+        {"id": "training_workspace", "label": "Model training workspace", "category": "Training results", "description": "Checkpoints, logs, and intermediate files from the latest model run.", "paths": [DATA_DIR / "trained_models"], "rebuild_note": rebuild},
+        {"id": "published_models", "label": "Published wake-word models", "category": "Training results", "description": "Finished TFLite models and JSON packages shown in Wake Words.", "paths": [TRAINED_WAKE_WORDS_DIR], "rebuild_note": "Tater links to these files will stop working. Train again to recreate them."},
+        {"id": "training_log", "label": "Training console log", "category": "Training results", "description": "Saved console output from the most recent training run.", "paths": [DATA_DIR / "recorder_training.log"], "rebuild_note": "The deleted history cannot be restored; the next run creates a new log."},
+
+        {"id": "archived_voice_banks", "label": "Archived legacy voice banks", "category": "Legacy and quarantined data", "description": "Older reference banks retained outside the active training workspace.", "paths": [SUPPORT_DIR / "voice-bank-archive"], "rebuild_note": "These archived references cannot be restored automatically."},
+        {"id": "quarantined_audio", "label": "Quarantined audio", "category": "Legacy and quarantined data", "description": "Rejected or diagnostic clips intentionally kept out of active training.", "paths": [SUPPORT_DIR / "quarantine"], "rebuild_note": "These diagnostic files cannot be restored automatically."},
+    ]
+
+
+def _managed_data_location(paths: List[Path]) -> str:
+    locations: List[str] = []
+    for path in paths:
+        try:
+            locations.append(str(path.relative_to(DATA_DIR)))
+        except ValueError:
+            locations.append(path.name)
+    return ", ".join(locations)
+
+
+def _managed_path_usage(path: Path) -> tuple[int, int]:
+    """Return allocated bytes and file count without following symbolic links."""
+    if not os.path.lexists(path):
+        return 0, 0
+    total_bytes = 0
+    file_count = 0
+    stack = [os.fspath(path)]
+    seen: set[tuple[int, int]] = set()
+    while stack:
+        current = stack.pop()
+        try:
+            stat = os.lstat(current)
+        except OSError:
+            continue
+        if stat_module.S_ISLNK(stat.st_mode) or not stat_module.S_ISDIR(stat.st_mode):
+            inode = (int(stat.st_dev), int(stat.st_ino))
+            if inode in seen:
+                continue
+            seen.add(inode)
+            allocated = int(getattr(stat, "st_blocks", 0) or 0) * 512
+            total_bytes += allocated or int(stat.st_size)
+            file_count += 1
+            continue
+        try:
+            with os.scandir(current) as entries:
+                stack.extend(entry.path for entry in entries)
+        except OSError:
+            continue
+    return total_bytes, file_count
+
+
+def _managed_data_payload() -> Dict[str, Any]:
+    items: List[Dict[str, Any]] = []
+    total_size = 0
+    total_files = 0
+    with DATA_MANAGEMENT_LOCK:
+        for definition in _managed_data_registry():
+            paths = [Path(path) for path in definition["paths"]]
+            usages = [_managed_path_usage(path) for path in paths]
+            size_bytes = sum(size for size, _ in usages)
+            file_count = sum(count for _, count in usages)
+            total_size += size_bytes
+            total_files += file_count
+            items.append({
+                **{key: value for key, value in definition.items() if key != "paths"},
+                "location": _managed_data_location(paths),
+                "size_bytes": size_bytes,
+                "file_count": file_count,
+                "exists": any(os.path.lexists(path) for path in paths),
+            })
+    return {
+        "ok": True,
+        "items": items,
+        "total_size_bytes": total_size,
+        "total_file_count": total_files,
+    }
+
+
+def _remove_managed_path(path: Path) -> None:
+    if not os.path.lexists(path):
+        return
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
+
+
+def _clear_auto_review_queue() -> None:
+    with AUTO_TRAIN_LOCK:
+        AUTO_TRAIN_QUEUED_FILES.clear()
+    while True:
+        try:
+            AUTO_TRAIN_REVIEW_QUEUE.get_nowait()
+        except queue.Empty:
+            break
+        else:
+            AUTO_TRAIN_REVIEW_QUEUE.task_done()
+
+
+def _delete_managed_data_item(item_id: str) -> Dict[str, Any]:
+    definitions = {item["id"]: item for item in _managed_data_registry()}
+    definition = definitions.get(str(item_id or ""))
+    if definition is None:
+        raise KeyError("Unknown managed data item.")
+    paths = [Path(path) for path in definition["paths"]]
+    with DATA_MANAGEMENT_LOCK:
+        with STATE_LOCK:
+            if STATE["training"]["running"]:
+                raise RuntimeError("Stop training before deleting trainer data.")
+        with AUTO_TRAIN_LOCK:
+            if AUTO_TRAIN_RUNTIME.get("review_running"):
+                raise RuntimeError("Wait for the current automatic audio review to finish before deleting data.")
+        previous_size = sum(_managed_path_usage(path)[0] for path in paths)
+        for path in paths:
+            _remove_managed_path(path)
+        if item_id == "personal_samples":
+            PERSONAL_DIR.mkdir(parents=True, exist_ok=True)
+            _sync_personal_samples_state()
+        elif item_id == "negative_samples":
+            NEGATIVE_DIR.mkdir(parents=True, exist_ok=True)
+            with AUTO_TRAIN_LOCK:
+                AUTO_TRAIN_STATE["pending_negative_count"] = 0
+                _save_auto_train_state_locked()
+        elif item_id == "captured_audio":
+            CAPTURED_DIR.mkdir(parents=True, exist_ok=True)
+            _clear_auto_review_queue()
+        elif item_id == "trim_history":
+            TRIM_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    payload = _managed_data_payload()
+    payload.update({"deleted_id": item_id, "released_bytes": previous_size})
+    return payload
 
 # --- Silero VAD (lazy-loaded) ---
 _silero_vad_model = None
@@ -413,6 +628,9 @@ def _list_trained_wake_words(base_url: str = "") -> List[Dict[str, Any]]:
                 "label": wake_word or safe,
                 "wake_word_name": safe,
                 "wake_word": wake_word or safe,
+                # `url` is retained for older trainer UIs and integrations.
+                # New consumers should prefer the explicit `json_url` field.
+                "url": json_url,
                 "json_url": json_url,
                 "model_url": model_url,
                 "json_file": json_path.name,
@@ -1626,6 +1844,7 @@ def _start_training_thread(
     language: str,
     auto_run: bool,
     training_lock,
+    tts_mode: str = DEFAULT_SERVER_TTS_MODE,
 ) -> threading.Thread:
     global TRAINING_THREAD
     if TRAINING_SHUTDOWN_EVENT.is_set():
@@ -1633,7 +1852,7 @@ def _start_training_thread(
 
     thread = threading.Thread(
         target=_run_training_background,
-        args=(safe_word, language, auto_run, training_lock),
+        args=(safe_word, language, auto_run, training_lock, tts_mode),
         daemon=True,
         name="wake-word-training",
     )
@@ -1642,6 +1861,7 @@ def _start_training_thread(
             raise RuntimeError("WakeWord Trainer is shutting down.")
         if TRAINING_THREAD is not None and TRAINING_THREAD.is_alive():
             raise RuntimeError("Training is already running.")
+        TRAINING_STOP_EVENT.clear()
         TRAINING_THREAD = thread
     try:
         thread.start()
@@ -1653,8 +1873,10 @@ def _start_training_thread(
     return thread
 
 
-def _stop_training_runtime(timeout: float = 20.0) -> bool:
-    TRAINING_SHUTDOWN_EVENT.set()
+def _stop_current_training(timeout: float = 20.0) -> bool:
+    """Stop one training run without putting the server into shutdown mode."""
+
+    TRAINING_STOP_EVENT.set()
     with TRAINING_RUNTIME_LOCK:
         proc = TRAINING_PROCESS
         thread = TRAINING_THREAD
@@ -1665,19 +1887,21 @@ def _stop_training_runtime(timeout: float = 20.0) -> bool:
             proc,
             graceful_timeout=min(12.0, max(1.0, float(timeout))),
         )
-
-    if (
-        thread is not None
-        and thread is not threading.current_thread()
-        and thread.is_alive()
-    ):
+    if thread is not None and thread is not threading.current_thread() and thread.is_alive():
         thread.join(timeout=max(0.1, float(timeout)))
         stopped = stopped and not thread.is_alive()
+    if stopped:
+        TRAINING_STOP_EVENT.clear()
     return stopped
 
 
+def _stop_training_runtime(timeout: float = 20.0) -> bool:
+    TRAINING_SHUTDOWN_EVENT.set()
+    return _stop_current_training(timeout=timeout)
+
+
 def _start_auto_training() -> Dict[str, Any]:
-    if TRAINING_SHUTDOWN_EVENT.is_set():
+    if TRAINING_SHUTDOWN_EVENT.is_set() or TRAINING_STOP_EVENT.is_set():
         return {"ok": False, "error": "WakeWord Trainer is shutting down."}
     with AUTO_TRAIN_LOCK:
         config = dict(AUTO_TRAIN_CONFIG)
@@ -1689,23 +1913,29 @@ def _start_auto_training() -> Dict[str, Any]:
 
     safe_word = safe_name(wake_phrase)
     language = str(config.get("language") or DEFAULT_LANGUAGE)
-    with STATE_LOCK:
-        if STATE["training"]["running"]:
-            return {"ok": False, "error": "Training already running."}
-        try:
-            training_lock = _try_acquire_training_run_lock()
-        except Exception as exc:
-            return {"ok": False, "error": f"Could not acquire the training lock: {exc}"}
-        if training_lock is None:
-            return {
-                "ok": False,
-                "error": "Training is already running in another trainer process.",
-                "code": "TRAINING_LOCKED",
-            }
-        STATE["raw_phrase"] = wake_phrase
-        STATE["safe_word"] = safe_word
-        STATE["language"] = language
-        STATE["training"]["running"] = True
+    available_languages = _available_languages()
+    tts_mode = _resolve_tts_mode_for_language(
+        DEFAULT_SERVER_TTS_MODE, language, available_languages
+    )
+    with DATA_MANAGEMENT_LOCK:
+        with STATE_LOCK:
+            if STATE["training"]["running"]:
+                return {"ok": False, "error": "Training already running."}
+            try:
+                training_lock = _try_acquire_training_run_lock()
+            except Exception as exc:
+                return {"ok": False, "error": f"Could not acquire the training lock: {exc}"}
+            if training_lock is None:
+                return {
+                    "ok": False,
+                    "error": "Training is already running in another trainer process.",
+                    "code": "TRAINING_LOCKED",
+                }
+            STATE["raw_phrase"] = wake_phrase
+            STATE["safe_word"] = safe_word
+            STATE["language"] = language
+            STATE["tts_mode"] = tts_mode
+            STATE["training"]["running"] = True
     try:
         with AUTO_TRAIN_LOCK:
             AUTO_TRAIN_STATE["last_train_started_at"] = _iso_now()
@@ -1713,7 +1943,9 @@ def _start_auto_training() -> Dict[str, Any]:
                 AUTO_TRAIN_STATE.get("pending_negative_count") or 0
             )
             _save_auto_train_state_locked()
-        _start_training_thread(safe_word, language, True, training_lock)
+        _start_training_thread(
+            safe_word, language, True, training_lock, tts_mode=tts_mode
+        )
     except Exception as exc:
         with STATE_LOCK:
             STATE["training"]["running"] = False
@@ -1721,7 +1953,13 @@ def _start_auto_training() -> Dict[str, Any]:
             AUTO_TRAIN_RUNTIME["training_pending_consumed"] = 0
         _release_training_run_lock(training_lock)
         return {"ok": False, "error": f"Could not start training: {exc}"}
-    return {"ok": True, "started": True, "safe_word": safe_word, "language": language}
+    return {
+        "ok": True,
+        "started": True,
+        "safe_word": safe_word,
+        "language": language,
+        "tts_mode": tts_mode,
+    }
 
 
 def _maybe_run_scheduled_auto_training() -> None:
@@ -1764,7 +2002,8 @@ def _auto_train_worker_loop() -> None:
                 file_name = ""
             if file_name:
                 try:
-                    _auto_review_capture(file_name)
+                    with DATA_MANAGEMENT_LOCK:
+                        _auto_review_capture(file_name)
                 finally:
                     with AUTO_TRAIN_LOCK:
                         AUTO_TRAIN_QUEUED_FILES.discard(file_name)
@@ -1833,6 +2072,7 @@ def _register_language(
     name: str,
     region: str = "",
     count: int = 1,
+    engine: str = "",
 ):
     if not family:
         return
@@ -1844,11 +2084,69 @@ def _register_language(
             "name": name,
             "voice_count": 0,
             "regions": [],
+            "engines": [],
         },
     )
     entry["voice_count"] += count
     if region and region not in entry["regions"]:
         entry["regions"].append(region)
+    if engine and engine not in entry["engines"]:
+        entry["engines"].append(engine)
+
+
+def _fetch_omnivoice_catalog() -> Dict[str, Dict[str, Any]] | None:
+    request = URLRequest(
+        OMNIVOICE_LANGUAGES_URL,
+        headers={"User-Agent": "microWakeWord-Trainer/modern-tts-apple-v1"},
+    )
+    with urlopen(request, timeout=15) as response:
+        entries = parse_omnivoice_catalog(response.read().decode("utf-8"))
+    return entries or None
+
+
+def _read_cached_omnivoice_catalog_file() -> Dict[str, Dict[str, Any]] | None:
+    try:
+        data = json.loads(OMNIVOICE_CATALOG_CACHE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _write_cached_omnivoice_catalog_file(data: Dict[str, Dict[str, Any]]) -> None:
+    try:
+        OMNIVOICE_CATALOG_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        OMNIVOICE_CATALOG_CACHE_FILE.write_text(
+            json.dumps(data, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _load_omnivoice_catalog() -> Dict[str, Dict[str, Any]]:
+    now = time.time()
+    with OMNIVOICE_CATALOG_LOCK:
+        cached = OMNIVOICE_CATALOG_CACHE.get("entries")
+        fetched_at = float(OMNIVOICE_CATALOG_CACHE.get("fetched_at") or 0.0)
+        if cached is not None and (now - fetched_at) < OMNIVOICE_CATALOG_CACHE_TTL_SECONDS:
+            return cached
+
+    disk_cached = _read_cached_omnivoice_catalog_file()
+    try:
+        fresh = _fetch_omnivoice_catalog()
+    except Exception:
+        fresh = None
+
+    selected = fresh or disk_cached or {
+        code: {"name": name, "iso_639_3": "", "duration_hours": 0.0}
+        for code, name in COMMON_OMNIVOICE_LANGUAGES.items()
+    }
+    with OMNIVOICE_CATALOG_LOCK:
+        OMNIVOICE_CATALOG_CACHE["entries"] = selected
+        OMNIVOICE_CATALOG_CACHE["fetched_at"] = now
+    if fresh:
+        _write_cached_omnivoice_catalog_file(fresh)
+    return selected
 
 
 def _fetch_piper_catalog() -> Dict[str, Any] | None:
@@ -1915,15 +2213,50 @@ def _load_piper_catalog() -> Dict[str, Any] | None:
 
 
 def _available_languages() -> List[Dict[str, Any]]:
-    languages: Dict[str, Dict[str, Any]] = {
-        "en": {
-            "code": "en",
-            "label": "English (en)",
-            "name": "English",
-            "voice_count": 1,
-            "regions": [],
-        }
-    }
+    languages: Dict[str, Dict[str, Any]] = {}
+    omnivoice_catalog = _load_omnivoice_catalog()
+
+    for code, metadata in omnivoice_catalog.items():
+        if not isinstance(metadata, dict):
+            continue
+        _register_language(
+            languages,
+            family=code,
+            name=str(metadata.get("name") or code.upper()),
+            count=0,
+            engine=ENGINE_OMNIVOICE,
+        )
+
+    for alias, catalog_code in OMNIVOICE_LANGUAGE_ALIASES.items():
+        metadata = omnivoice_catalog.get(catalog_code) or {}
+        _register_language(
+            languages,
+            family=alias,
+            name=COMMON_OMNIVOICE_LANGUAGES.get(
+                alias, str(metadata.get("name") or alias.upper())
+            ),
+            count=0,
+            engine=ENGINE_OMNIVOICE,
+        )
+
+    for code, name in QWEN_LANGUAGES.items():
+        _register_language(
+            languages, family=code, name=name, count=0, engine=ENGINE_QWEN3
+        )
+    for code, name in MOSS_LANGUAGES.items():
+        _register_language(
+            languages, family=code, name=name, count=0, engine=ENGINE_MOSS
+        )
+
+    piper_english_model = PIPER_ROOT / "models" / "en_US-libritts_r-medium.pt"
+    if piper_english_model.is_file():
+        _register_language(
+            languages,
+            family="en",
+            name="English",
+            count=1,
+            engine=ENGINE_PIPER,
+        )
 
     if PIPER_VOICES_DIR.exists():
         for meta_path in sorted(PIPER_VOICES_DIR.glob("*.onnx.json")):
@@ -1934,12 +2267,19 @@ def _available_languages() -> List[Dict[str, Any]]:
 
             language = data.get("language") or {}
             family = _registered_language_family(language)
-            if not family or family == "en":
+            if not family:
                 continue
 
             name = str(language.get("name_english") or language.get("name_native") or family.upper()).strip()
             region = str(language.get("country_english") or language.get("region") or "").strip()
-            _register_language(languages, family=family, name=name, region=region, count=1)
+            _register_language(
+                languages,
+                family=family,
+                name=name,
+                region=region,
+                count=1,
+                engine=ENGINE_PIPER,
+            )
 
     catalog = _load_piper_catalog() or {}
     for entry in catalog.values():
@@ -1947,11 +2287,53 @@ def _available_languages() -> List[Dict[str, Any]]:
             continue
         language = entry.get("language") or {}
         family = _registered_language_family(language)
-        if not family or family == "en":
+        if not family:
             continue
         name = str(language.get("name_english") or language.get("name_native") or family.upper()).strip()
         region = str(language.get("country_english") or language.get("region") or "").strip()
-        _register_language(languages, family=family, name=name, region=region, count=0)
+        _register_language(
+            languages,
+            family=family,
+            name=name,
+            region=region,
+            count=0,
+            engine=ENGINE_PIPER,
+        )
+
+    if "en" not in languages:
+        _register_language(
+            languages,
+            family="en",
+            name="English",
+            count=0,
+            engine=ENGINE_OMNIVOICE,
+        )
+
+    engine_order = (ENGINE_OMNIVOICE, ENGINE_QWEN3, ENGINE_MOSS, ENGINE_PIPER)
+    display_names = {
+        ENGINE_OMNIVOICE: "OmniVoice",
+        ENGINE_QWEN3: "Qwen3",
+        ENGINE_MOSS: "MOSS",
+        ENGINE_PIPER: "Piper",
+    }
+    quality_labels = {
+        "recommended": "Recommended",
+        "supported": "Supported",
+        "experimental": "Experimental",
+        "legacy": "Legacy",
+    }
+    for entry in languages.values():
+        entry["engines"] = [
+            engine for engine in engine_order if engine in entry["engines"]
+        ]
+        entry["quality"] = quality_for_engines(entry["engines"])
+        entry["engine_labels"] = [
+            display_names[engine] for engine in entry["engines"]
+        ]
+        entry["label"] = (
+            f"{entry['name']} ({entry['code']}) — "
+            f"{quality_labels[entry['quality']]}"
+        )
 
     ordered = [languages["en"]]
     ordered.extend(
@@ -1964,13 +2346,43 @@ def _available_languages() -> List[Dict[str, Any]]:
 
 
 def _normalize_language(language: str | None) -> str:
-    requested = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
+    requested = (
+        (language or DEFAULT_LANGUAGE).strip().lower().replace("-", "_")
+        or DEFAULT_LANGUAGE
+    )
     available_codes = {item["code"] for item in _available_languages()}
     if requested in available_codes:
         return requested
+    family = requested.split("_", 1)[0]
+    if family in available_codes:
+        return family
     if DEFAULT_LANGUAGE in available_codes:
         return DEFAULT_LANGUAGE
     return "en"
+
+
+def _resolve_tts_mode_for_language(
+    mode: Any,
+    language: str,
+    available_languages: List[Dict[str, Any]],
+) -> str:
+    selected = normalize_tts_mode(mode)
+    entry = next(
+        (item for item in available_languages if item.get("code") == language),
+        {},
+    )
+    engines = set(entry.get("engines") or [])
+    has_modern = bool(
+        engines.intersection({ENGINE_OMNIVOICE, ENGINE_QWEN3, ENGINE_MOSS})
+    )
+    has_piper = ENGINE_PIPER in engines
+    if selected == "piper" and not has_piper:
+        return "modern" if has_modern else selected
+    if selected in {"modern", "hybrid"} and not has_modern and has_piper:
+        return "piper"
+    if selected == "hybrid" and not has_piper:
+        return "modern"
+    return selected
 
 
 def _catalog_voice_files(language_family: str) -> List[tuple[str, str]]:
@@ -2618,9 +3030,11 @@ def _run_training_background(
     language: str,
     auto_run: bool = False,
     training_lock=None,
+    tts_mode: str = DEFAULT_SERVER_TTS_MODE,
 ):
     global TRAINING_PROCESS, TRAINING_THREAD
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
+    tts_mode = normalize_tts_mode(tts_mode)
     cmd = ["bash", TRAIN_SCRIPT, safe_word]
     rc = 999
     proc: subprocess.Popen | None = None
@@ -2635,15 +3049,25 @@ def _run_training_background(
 
     _append_train_log(f"→ Running: {' '.join(cmd)}")
     _append_train_log(f"→ Language: {language}")
+    _append_train_log(f"→ TTS mode: {tts_mode}")
 
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        if language != "en":
+        if language != "en" and tts_mode == "piper":
             _ensure_non_english_language_voices(language, _append_train_log)
+        elif language != "en" and tts_mode == "hybrid":
+            try:
+                _ensure_non_english_language_voices(language, _append_train_log)
+            except Exception as error:
+                _append_train_log(
+                    f"⚠️ Piper is unavailable for hybrid mode; using modern TTS only: {error}"
+                )
 
         with open(log_path, "w", encoding="utf-8") as lf:
             env = os.environ.copy()
             env["MWW_LANGUAGE"] = language
+            env["MWW_TTS_MODE"] = tts_mode
+            env["MWW_TTS_VOICE_COUNT"] = str(DEFAULT_TTS_VOICE_COUNT)
             env["WAKEWORD_TRAINER_SUPPORT_DIR"] = str(SUPPORT_DIR)
             env["WAKEWORD_TRAINER_DATA_DIR"] = str(DATA_DIR)
             env["TRAINED_WAKE_WORDS_DIR"] = str(TRAINED_WAKE_WORDS_DIR)
@@ -2660,8 +3084,9 @@ def _run_training_background(
             )
             with TRAINING_RUNTIME_LOCK:
                 TRAINING_PROCESS = proc
-            if TRAINING_SHUTDOWN_EVENT.is_set():
-                _append_train_log("→ Trainer shutdown requested; stopping the active training run.")
+            if TRAINING_SHUTDOWN_EVENT.is_set() or TRAINING_STOP_EVENT.is_set():
+                reason = "Trainer shutdown" if TRAINING_SHUTDOWN_EVENT.is_set() else "Session stop"
+                _append_train_log(f"→ {reason} requested; stopping the active training run.")
                 _terminate_training_process_tree(proc)
             assert proc.stdout is not None
             try:
@@ -2675,8 +3100,9 @@ def _run_training_background(
 
             rc = proc.wait()
 
-        if TRAINING_SHUTDOWN_EVENT.is_set() and rc != 0:
-            _append_train_log(f"→ Training stopped for Trainer shutdown (exit_code={rc})")
+        if (TRAINING_SHUTDOWN_EVENT.is_set() or TRAINING_STOP_EVENT.is_set()) and rc != 0:
+            reason = "Trainer shutdown" if TRAINING_SHUTDOWN_EVENT.is_set() else "session stop"
+            _append_train_log(f"→ Training stopped for {reason} (exit_code={rc})")
         else:
             _append_train_log(f"✓ Training finished (exit_code={rc})")
         with STATE_LOCK:
@@ -2692,7 +3118,7 @@ def _run_training_background(
             with AUTO_TRAIN_LOCK:
                 AUTO_TRAIN_STATE["last_train_finished_at"] = _iso_now()
                 AUTO_TRAIN_STATE["last_train_exit_code"] = rc
-                if rc == 0 and not TRAINING_SHUTDOWN_EVENT.is_set():
+                if rc == 0 and not TRAINING_SHUTDOWN_EVENT.is_set() and not TRAINING_STOP_EVENT.is_set():
                     consumed = int(AUTO_TRAIN_RUNTIME.get("training_pending_consumed") or 0)
                     AUTO_TRAIN_STATE["pending_negative_count"] = max(
                         0,
@@ -2700,7 +3126,7 @@ def _run_training_background(
                     )
                 AUTO_TRAIN_RUNTIME["training_pending_consumed"] = 0
                 _save_auto_train_state_locked()
-            if rc == 0 and not TRAINING_SHUTDOWN_EVENT.is_set():
+            if rc == 0 and not TRAINING_SHUTDOWN_EVENT.is_set() and not TRAINING_STOP_EVENT.is_set():
                 _append_train_log("→ Publishing the newly trained wake word to Tater and all satellites")
                 notify_result = _notify_tater_satellites(safe_word)
                 if notify_result.get("ok"):
@@ -2721,6 +3147,8 @@ def _run_training_background(
         with STATE_LOCK:
             STATE["training"]["running"] = False
         _release_training_run_lock(training_lock)
+        if not TRAINING_SHUTDOWN_EVENT.is_set():
+            TRAINING_STOP_EVENT.clear()
 
 
 # -------------------- Routes --------------------
@@ -2847,6 +3275,18 @@ def auto_train_action(payload: Dict[str, Any] = None):
 
 @app.post("/api/start_session")
 def start_session(payload: Dict[str, Any]):
+    with STATE_LOCK:
+        active_safe_word = STATE.get("safe_word")
+    if active_safe_word:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"Session '{active_safe_word}' is already active. Stop it before changing the wake phrase.",
+                "code": "SESSION_ACTIVE",
+            },
+            status_code=409,
+        )
+
     raw = (payload.get("phrase") or "").strip()
     if not raw:
         return JSONResponse({"ok": False, "error": "phrase is required"}, status_code=400)
@@ -2857,6 +3297,11 @@ def start_session(payload: Dict[str, Any]):
     takes_per_speaker = int(payload.get("takes_per_speaker") or TAKES_PER_SPEAKER_DEFAULT)
     language = _normalize_language(payload.get("language"))
     available_languages = _available_languages()
+    tts_mode = _resolve_tts_mode_for_language(
+        payload.get("tts_mode", DEFAULT_SERVER_TTS_MODE),
+        language,
+        available_languages,
+    )
 
     speakers_total = max(1, min(10, speakers_total))
     takes_per_speaker = max(1, min(50, takes_per_speaker))
@@ -2865,6 +3310,7 @@ def start_session(payload: Dict[str, Any]):
         STATE["raw_phrase"] = raw
         STATE["safe_word"] = safe
         STATE["language"] = language
+        STATE["tts_mode"] = tts_mode
         STATE["speakers_total"] = speakers_total
         STATE["takes_per_speaker"] = takes_per_speaker
         # do not interrupt training if running
@@ -2875,11 +3321,52 @@ def start_session(payload: Dict[str, Any]):
         "raw_phrase": raw,
         "safe_word": safe,
         "language": language,
+        "tts_mode": tts_mode,
         "speakers_total": speakers_total,
         "takes_per_speaker": takes_per_speaker,
         "takes_total": speakers_total * takes_per_speaker,
         "takes_received": len(takes),
         "takes": takes,
+        "available_languages": available_languages,
+    }
+
+
+@app.post("/api/stop_session")
+def stop_session():
+    with STATE_LOCK:
+        had_session = bool(STATE.get("safe_word"))
+        training_running = bool(STATE["training"].get("running"))
+
+    if training_running and not _stop_current_training(timeout=20.0):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Training did not stop cleanly; the session remains active.",
+                "code": "TRAINING_STOP_TIMEOUT",
+            },
+            status_code=500,
+        )
+
+    takes = _sync_personal_samples_state()
+    available_languages = _available_languages()
+    with STATE_LOCK:
+        STATE["raw_phrase"] = None
+        STATE["safe_word"] = None
+        STATE["training"]["safe_word"] = None
+        training = dict(STATE["training"])
+        language = _normalize_language(STATE["language"])
+        tts_mode = normalize_tts_mode(STATE.get("tts_mode"))
+    return {
+        "ok": True,
+        "session_stopped": had_session,
+        "training_stopped": training_running,
+        "raw_phrase": None,
+        "safe_word": None,
+        "language": language,
+        "tts_mode": tts_mode,
+        "takes_received": len(takes),
+        "takes": list(takes),
+        "training": training,
         "available_languages": available_languages,
     }
 
@@ -2890,12 +3377,15 @@ def get_session():
     available_languages = _available_languages()
     with STATE_LOCK:
         current_language = _normalize_language(STATE["language"])
+        current_tts_mode = normalize_tts_mode(STATE.get("tts_mode"))
         STATE["language"] = current_language
+        STATE["tts_mode"] = current_tts_mode
         return {
             "ok": True,
             "raw_phrase": STATE["raw_phrase"],
             "safe_word": STATE["safe_word"],
             "language": current_language,
+            "tts_mode": current_tts_mode,
             "speakers_total": STATE["speakers_total"],
             "takes_per_speaker": STATE["takes_per_speaker"],
             "takes_received": len(takes),
@@ -3135,6 +3625,23 @@ def captured_audio():
 @app.get("/api/samples")
 def samples():
     return _samples_payload()
+
+
+@app.get("/api/data")
+def managed_data():
+    return _managed_data_payload()
+
+
+@app.delete("/api/data/{item_id}")
+def delete_managed_data(item_id: str):
+    try:
+        return _delete_managed_data_item(item_id)
+    except KeyError as exc:
+        return JSONResponse({"ok": False, "error": str(exc.args[0])}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": f"Could not delete trainer data: {exc}"}, status_code=500)
 
 
 @app.get("/api/audio/{bucket}/{file_name}")
@@ -3393,6 +3900,7 @@ def train_now(payload: Dict[str, Any] = None):
     with STATE_LOCK:
         safe_word = STATE["safe_word"]
         language = (STATE.get("language") or DEFAULT_LANGUAGE)
+        tts_mode = normalize_tts_mode(STATE.get("tts_mode"))
         takes_received = int(STATE["takes_received"])
         speakers_total = int(STATE["speakers_total"])
         takes_per_speaker = int(STATE["takes_per_speaker"])
@@ -3421,28 +3929,31 @@ def train_now(payload: Dict[str, Any] = None):
     if not Path(TRAIN_SCRIPT).exists():
         return JSONResponse({"ok": False, "error": f"TRAIN_SCRIPT not found: {TRAIN_SCRIPT}"}, status_code=500)
 
-    with STATE_LOCK:
-        if STATE["training"]["running"]:
-            return JSONResponse({"ok": False, "error": "Training already running"}, status_code=400)
-        try:
-            training_lock = _try_acquire_training_run_lock()
-        except Exception as exc:
-            return JSONResponse(
-                {"ok": False, "error": f"Could not acquire the training lock: {exc}"},
-                status_code=500,
-            )
-        if training_lock is None:
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "error": "Training is already running in another trainer process.",
-                    "code": "TRAINING_LOCKED",
-                },
-                status_code=409,
-            )
-        STATE["training"]["running"] = True
+    with DATA_MANAGEMENT_LOCK:
+        with STATE_LOCK:
+            if STATE["training"]["running"]:
+                return JSONResponse({"ok": False, "error": "Training already running"}, status_code=400)
+            try:
+                training_lock = _try_acquire_training_run_lock()
+            except Exception as exc:
+                return JSONResponse(
+                    {"ok": False, "error": f"Could not acquire the training lock: {exc}"},
+                    status_code=500,
+                )
+            if training_lock is None:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "Training is already running in another trainer process.",
+                        "code": "TRAINING_LOCKED",
+                    },
+                    status_code=409,
+                )
+            STATE["training"]["running"] = True
     try:
-        _start_training_thread(safe_word, language, False, training_lock)
+        _start_training_thread(
+            safe_word, language, False, training_lock, tts_mode=tts_mode
+        )
     except Exception as exc:
         with STATE_LOCK:
             STATE["training"]["running"] = False
@@ -3453,6 +3964,7 @@ def train_now(payload: Dict[str, Any] = None):
         "ok": True,
         "started": True,
         "safe_word": safe_word,
+        "tts_mode": tts_mode,
         "personal_samples_used": takes_received > 0,
         "allow_no_personal": allow_no_personal,
     }
