@@ -72,6 +72,10 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
         source = TRAINER_SOURCE.read_text(encoding="utf-8")
         compile(source, str(TRAINER_SOURCE), "exec")
 
+    def test_app_updates_preserve_modern_tts_caches(self):
+        self.assertIn('"tts-envs/"', self.launcher)
+        self.assertIn('"voice-bank/"', self.launcher)
+
     def test_termination_reply_runs_in_appkit_modal_run_loop(self):
         start = self.launcher.index("func applicationShouldTerminate(")
         end = self.launcher.index("private func startRecoveryWatchdog", start)

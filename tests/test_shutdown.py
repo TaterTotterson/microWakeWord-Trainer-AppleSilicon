@@ -38,6 +38,7 @@ class _FakeTrainingProcess:
 class ShutdownTests(unittest.TestCase):
     def tearDown(self):
         trainer.TRAINING_SHUTDOWN_EVENT.clear()
+        trainer.TRAINING_STOP_EVENT.clear()
 
     def test_training_process_group_gets_term_then_kill_after_timeout(self):
         proc = _FakeTrainingProcess(timeout_once=True)
@@ -67,6 +68,26 @@ class ShutdownTests(unittest.TestCase):
         trainer.TRAINING_SHUTDOWN_EVENT.set()
         with self.assertRaisesRegex(RuntimeError, "shutting down"):
             trainer._start_training_thread("hey_tater", "en", False, None)
+
+    def test_session_stop_terminates_training_without_shutting_down_server(self):
+        proc = _FakeTrainingProcess()
+        original_process = trainer.TRAINING_PROCESS
+        original_thread = trainer.TRAINING_THREAD
+        try:
+            trainer.TRAINING_PROCESS = proc
+            trainer.TRAINING_THREAD = None
+            with (
+                patch.object(trainer.os, "getpgid", return_value=proc.pid),
+                patch.object(trainer.os, "getpgrp", return_value=999),
+                patch.object(trainer.os, "killpg") as killpg,
+            ):
+                self.assertTrue(trainer._stop_current_training(timeout=0.2))
+            killpg.assert_called_once_with(proc.pid, signal.SIGTERM)
+            self.assertFalse(trainer.TRAINING_SHUTDOWN_EVENT.is_set())
+            self.assertFalse(trainer.TRAINING_STOP_EVENT.is_set())
+        finally:
+            trainer.TRAINING_PROCESS = original_process
+            trainer.TRAINING_THREAD = original_thread
 
     def test_active_training_process_group_stops_during_shutdown(self):
         original_root = trainer.ROOT_DIR

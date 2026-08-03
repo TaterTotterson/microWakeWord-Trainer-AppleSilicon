@@ -7,7 +7,7 @@
   <a href="https://taterassistant.com">taterassistant.com</a>
 </h3>
 
-Train custom microWakeWord models on Apple Silicon with a local web UI, generated Piper samples, device-captured samples, reviewed false-wake negatives, live training logs, and local wake-word links for Tater Native satellites.
+Train custom microWakeWord models on Apple Silicon with a local web UI, multilingual samples from a modern OmniVoice/Qwen3/MOSS ensemble, device-captured samples, reviewed false-wake negatives, live training logs, and local wake-word links for Tater Native satellites.
 
 Real samples come from device-captured wake audio, close misses, or manual uploads. Every saved sample is normalized to `16 kHz / mono / 16-bit PCM WAV` before training.
 
@@ -15,12 +15,23 @@ Real samples come from device-captured wake audio, close misses, or manual uploa
 
 ## What The UI Does
 
+- The entire interface is reactive Vue 3 + TypeScript, following the same typed component pattern as Tater's newer UI surfaces.
 - `Trainer` starts a wake-word session, shows positive/negative sample counts, and launches training.
 - `Auto Training` transcribes wake triggers, files phrase-misses as reviewed negatives, retrains on a schedule, and requests a satellite model refresh through Tater.
 - `Captured Audio` reviews clips sent by Tater Native or ESPHome sats, including wake hits, close misses, and false wakes.
 - `Samples` plays, removes, clears, and manually imports personal or negative samples.
 - `Wake Words` lists locally trained JSON/model links for live wake-word switching in Tater.
 - Popup consoles show colorized training logs while long-running jobs are active.
+
+The production bundle is committed under `static/ui`, so the web launcher and signed macOS app do not need Node.js. To change the UI, edit `frontend/src` and rebuild it:
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+`npm run build` type-checks every Vue component before writing the offline bundle used by `trainer_server.py`.
 
 ---
 
@@ -203,10 +214,11 @@ Starting a new session does not clear samples. Use the clear buttons in `Samples
 
 1. Enter the wake phrase in `Trainer`.
 2. Choose the language.
-3. Optionally test pronunciation with `Test TTS`.
-4. Review the positive and negative sample counts.
-5. Click `Start training`.
-6. Watch the popup training console.
+3. Choose the TTS source. `Four-provider ensemble` is recommended when Piper is available.
+4. Optionally preview the phrase with the Mac system voice. This preview is separate from the training engines.
+5. Review the positive and negative sample counts.
+6. Click `Start training`.
+7. Watch the popup training console.
 
 Personal samples are optional. Training can run with zero personal samples after confirmation, using generated TTS samples and the stock negative datasets.
 
@@ -242,16 +254,19 @@ Use `Review inbox now`, `Train now`, and `Publish current wake word now` to run 
 
 ## Language Support
 
-The language picker is dynamic.
+The language picker is built from the live OmniVoice catalog and the installed modern/legacy engines.
 
-- `en` is always available.
-- English keeps the existing dedicated generator model path.
-- Non-English languages are discovered from the Piper voices catalog and any local Piper voice metadata.
-- When a non-English language is selected, the trainer downloads all voices for that selected language only.
-- Already-downloaded voices are reused.
-- It does not download every language up front.
+- OmniVoice supplies the broad multilingual route (hundreds of catalog languages).
+- Qwen3-TTS joins the ensemble for Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian.
+- MOSS-TTS-Nano joins the ensemble for its published multilingual set.
+- Languages covered by all three engines are marked `Recommended`; smaller ensembles are marked `Supported` or `Experimental`.
+- Qwen, OmniVoice, and Piper generate final corpus takes directly. MOSS Nano is clone-only, so each MOSS take uses a different already-accepted direct take as its carrier instead of cycling a small profile bank.
+- Qwen exposes 18,750 balanced voice conditions before any instruction repeats, while fresh sampling seeds add further variation. Piper uses the full speaker set in its installed model.
+- Every candidate is checked for static, broadband/high-frequency noise, silence, clipping, excessive duration/rambling, and exact duplication before it can enter training. Failed provider shares are filled by a safer provider.
 
-If the upstream Piper catalog is unavailable, already-installed local voices are used when available.
+Model environments and weights download on first use and are cached under `~/.taterwakewordtrainer/app/current`. The Qwen and MOSS paths use MLX-Audio on Apple Silicon; OmniVoice uses PyTorch MPS. These environments are isolated from the TensorFlow training environment.
+
+`Four-provider ensemble` uses OmniVoice, Qwen, MOSS, and Piper when a compatible Piper model exists, and safely falls back to the modern providers where it does not. `Modern only` excludes Piper, and `Piper only` preserves the legacy comparison route.
 
 ---
 
@@ -259,7 +274,7 @@ If the upstream Piper catalog is unavailable, already-installed local voices are
 
 The first training run downloads and prepares the training datasets when they are missing. After the datasets are prepared, later runs reuse the local copies.
 
-Piper voices, generated samples, and feature caches are also reused when the selected language, wake word, and sample inputs have not changed.
+Model downloads, completed generated corpora, and feature caches are reused when the selected language, wake word, TTS mode, and sample inputs have not changed.
 
 ---
 
@@ -348,6 +363,14 @@ Run the Apple Silicon training pipeline directly:
 ./train_microwakeword_macos.sh "hey_tater"
 ```
 
+The direct script defaults to the four-provider route and generates every final corpus take directly. Compatibility examples:
+
+```bash
+./train_microwakeword_macos.sh "hey_tater" 50000 8 --language en --tts-mode hybrid
+./train_microwakeword_macos.sh "hey_tater" 50000 8 --language en --tts-mode modern
+./train_microwakeword_macos.sh "hey_tater" 50000 100 --language en --tts-mode piper
+```
+
 If `personal_samples/*.wav` or `negative_samples/*.wav` exists, those samples are included automatically.
 
 ---
@@ -367,4 +390,8 @@ If `personal_samples/*.wav` or `negative_samples/*.wav` exists, those samples ar
 Built on top of:
 
 - [microWakeWord](https://github.com/kahrendt/microWakeWord)
-- [piper-sample-generator](https://github.com/rhasspy/piper-sample-generator)
+- [OmniVoice](https://github.com/k2-fsa/OmniVoice)
+- [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
+- [MOSS-TTS](https://github.com/OpenMOSS/MOSS-TTS)
+- [MLX-Audio](https://github.com/Blaizzy/mlx-audio)
+- [piper-sample-generator](https://github.com/rhasspy/piper-sample-generator) (optional legacy mode)

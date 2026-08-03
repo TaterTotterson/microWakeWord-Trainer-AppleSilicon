@@ -35,6 +35,7 @@ rsync -a --delete \
   --exclude='.cache/' \
   --exclude='.recorder-venv/' \
   --exclude='.venv/' \
+  --exclude='frontend/node_modules/' \
   --exclude='__pycache__/' \
   --exclude='*.pyc' \
   --exclude='.DS_Store' \
@@ -58,6 +59,8 @@ rsync -a --delete \
   --exclude='reviewed_negative_features/' \
   --exclude='micro-wake-word/' \
   --exclude='piper-sample-generator/' \
+  --exclude='tts-envs/' \
+  --exclude='voice-bank/' \
   --exclude='mit_rirs/' \
   --exclude='negative_datasets/' \
   --exclude='audioset/' \
