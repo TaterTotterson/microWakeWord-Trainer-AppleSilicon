@@ -101,6 +101,88 @@ fi
 # ── venv (ARM64 + pinned stack, install once) ────────────────────────────────
 PYTHON_BIN="${PYTHON_BIN:-/opt/homebrew/bin/python3.11}"
 
+# The app launcher prepares REC_VENV_DIR before it starts the UI backend. Keep
+# that working environment entirely app-managed. Standalone/headless CLI runs
+# do not have it, so give them a small isolated QA environment of their own.
+REFERENCE_QA_DEPENDENCIES=(
+  "faster-whisper>=1.0.0"
+  "silero-vad>=5.0.0"
+  "numpy>=1.24.0"
+)
+CLI_MANAGES_REFERENCE_QA=0
+
+reference_qa_dependencies_ready() {
+  local qa_python="$1"
+  "$qa_python" - <<'PY' >/dev/null 2>&1
+import ctranslate2
+import numpy
+import onnxruntime
+import torch
+from faster_whisper import WhisperModel
+from silero_vad import load_silero_vad
+PY
+}
+
+ensure_reference_qa_environment() {
+  local qa_venv qa_python pin_file expected_fingerprint installed_fingerprint
+
+  if [[ -n "${REC_VENV_DIR:-}" ]]; then
+    qa_venv="$REC_VENV_DIR"
+    qa_python="$qa_venv/bin/python"
+    if [[ ! -x "$qa_python" ]] || ! reference_qa_dependencies_ready "$qa_python"; then
+      echo "❌ The app-managed reference QA environment is unavailable: $qa_venv"
+      echo "   Restart the WakeWord Trainer app so it can repair its recorder dependencies."
+      return 1
+    fi
+    echo "✅ Using app-managed reference QA environment: $qa_venv"
+    return 0
+  fi
+
+  CLI_MANAGES_REFERENCE_QA=1
+  qa_venv="${MWW_CLI_QA_VENV_DIR:-${SUPPORT_DIR}/cli-reference-qa-venv}"
+  qa_python="$qa_venv/bin/python"
+  pin_file="$qa_venv/.dependency_fingerprint"
+  expected_fingerprint="$(printf '%s\n' "${REFERENCE_QA_DEPENDENCIES[@]}" | /usr/bin/shasum -a 256 | awk '{print $1}')"
+
+  if [[ ! -x "$qa_python" ]]; then
+    echo "🧪 Creating standalone CLI reference QA environment: $qa_venv"
+    arch -arm64 "$PYTHON_BIN" -m venv "$qa_venv"
+  fi
+
+  installed_fingerprint="$(tr -d '[:space:]' < "$pin_file" 2>/dev/null || true)"
+  if [[ "$installed_fingerprint" != "$expected_fingerprint" ]] || ! reference_qa_dependencies_ready "$qa_python"; then
+    echo "📦 Installing standalone CLI reference QA dependencies…"
+    "$qa_python" -m pip install -U pip setuptools wheel
+    "$qa_python" -m pip install "${REFERENCE_QA_DEPENDENCIES[@]}"
+    printf '%s\n' "$expected_fingerprint" > "$pin_file"
+  fi
+
+  if ! reference_qa_dependencies_ready "$qa_python"; then
+    echo "❌ Standalone CLI reference QA environment is incomplete: $qa_venv"
+    return 1
+  fi
+
+  export REC_VENV_DIR="$qa_venv"
+  echo "✅ Standalone CLI reference QA environment ready: $qa_venv"
+}
+
+configure_cli_omnivoice_tmpdir() {
+  local local_temp_root
+  if [[ "$CLI_MANAGES_REFERENCE_QA" != "1" ]]; then
+    return 0
+  fi
+  if [[ -z "${MWW_OMNIVOICE_TMPDIR:-}" ]]; then
+    local_temp_root="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+    if [[ -z "$local_temp_root" || ! -d "$local_temp_root" ]]; then
+      local_temp_root="/tmp"
+    fi
+    export MWW_OMNIVOICE_TMPDIR="${local_temp_root%/}/tater-wake-omnivoice"
+  fi
+  mkdir -p "$MWW_OMNIVOICE_TMPDIR"
+  chmod 700 "$MWW_OMNIVOICE_TMPDIR" 2>/dev/null || true
+  echo "✅ OmniVoice CLI socket temp: $MWW_OMNIVOICE_TMPDIR"
+}
+
 TF_VERSION="${TF_VERSION:-2.16.2}"
 TF_METAL_VERSION="${TF_METAL_VERSION:-1.2.0}"
 KERAS_VERSION="${KERAS_VERSION:-3.3.3}"
@@ -470,6 +552,10 @@ else
 fi
 
 if [[ "$sample_cache_hit" != "true" ]]; then
+  # Do this before launching any expensive TTS engine. A missing QA runtime
+  # must fail immediately rather than after hours of successful synthesis.
+  ensure_reference_qa_environment
+  configure_cli_omnivoice_tmpdir
   echo "🎤 Generating ${MAX_TTS_SAMPLES} samples for '${TARGET_WORD}' with ${TTS_MODE} TTS…"
   generator_cmd=(
     "$PY"

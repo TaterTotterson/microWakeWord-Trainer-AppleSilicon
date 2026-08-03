@@ -69,6 +69,37 @@ class ModernTtsTests(unittest.TestCase):
             ["--position_temperature", "5.0", "--class_temperature", "0.0"],
         )
 
+    def test_cli_omnivoice_temp_is_isolated_from_other_engines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            omnivoice_temp = data_dir / "local-socket-temp"
+            args = argparse.Namespace(
+                phrase="hey_tater",
+                language="en",
+                tts_mode="modern",
+                samples=1,
+                batch_size=4,
+                voice_count=2,
+                data_dir=data_dir,
+                output_dir=data_dir / "work" / "samples",
+                ffmpeg="ffmpeg",
+                dry_run=False,
+                piper_models=[],
+            )
+            with patch.dict(
+                generator_module.os.environ,
+                {
+                    "TMPDIR": "/Volumes/External/tater-wake-tmp",
+                    "MWW_OMNIVOICE_TMPDIR": str(omnivoice_temp),
+                },
+                clear=False,
+            ):
+                instance = generator_module.Generator(args)
+            self.assertEqual(instance.env["TMPDIR"], "/Volumes/External/tater-wake-tmp")
+            self.assertEqual(instance.omnivoice_env["TMPDIR"], str(omnivoice_temp.resolve()))
+            self.assertEqual(instance.omnivoice_env["TMP"], str(omnivoice_temp.resolve()))
+            self.assertTrue(omnivoice_temp.is_dir())
+
     def test_omnivoice_uses_a_hidden_stable_prompt_before_short_clone(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
@@ -603,6 +634,9 @@ class ModernTtsTests(unittest.TestCase):
         training_script = (REPO_ROOT / "train_microwakeword_macos.sh").read_text(encoding="utf-8")
         self.assertIn("tts_generate_samples.py", training_script)
         self.assertIn('TTS_MODE="${MWW_TTS_MODE:-hybrid}"', training_script)
+        self.assertIn('if [[ -n "${REC_VENV_DIR:-}" ]]', training_script)
+        self.assertIn('${SUPPORT_DIR}/cli-reference-qa-venv', training_script)
+        self.assertIn('export MWW_OMNIVOICE_TMPDIR=', training_script)
         setup_script = (REPO_ROOT / "scripts_macos" / "setup_modern_tts_envs").read_text(encoding="utf-8")
         self.assertIn("mlx-audio[tts]", setup_script)
         self.assertIn("torch==2.8.0", setup_script)

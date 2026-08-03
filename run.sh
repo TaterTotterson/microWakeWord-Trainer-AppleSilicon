@@ -18,6 +18,7 @@ export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
 cd "$ROOT_DIR"
 
 VENV_DIR="${REC_VENV_DIR:-$SUPPORT_DIR/recorder-venv}"
+export REC_VENV_DIR="$VENV_DIR"
 PYTHON_BIN="${REC_PYTHON_BIN:-/opt/homebrew/bin/python3.11}"
 PY="$VENV_DIR/bin/python"
 PIP="$PY -m pip"

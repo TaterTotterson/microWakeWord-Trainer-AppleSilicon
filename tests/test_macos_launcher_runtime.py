@@ -56,6 +56,7 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
 
     def test_dependency_list_drives_install_and_fingerprint(self):
         self.assertIn("UI_DEPENDENCIES=(", self.run_script)
+        self.assertIn('export REC_VENV_DIR="$VENV_DIR"', self.run_script)
         self.assertIn('$PIP install "${UI_DEPENDENCIES[@]}"', self.run_script)
         self.assertIn(
             "printf '%s\\n' \"${UI_DEPENDENCIES[@]}\" | /usr/bin/shasum -a 256",

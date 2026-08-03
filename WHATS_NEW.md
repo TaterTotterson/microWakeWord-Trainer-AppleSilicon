@@ -1,4 +1,4 @@
-- Added an ESPHome section to the Wake Words tab with a dedicated, copyable micro_wake_word JSON URL for every trained model.
-- Kept the full Tater Native package unchanged while generating a separate strict ESPHome v2 manifest that references the same TFLite model.
-- Updated command-line training to output the TFLite model, Tater JSON, and ESPHome JSON as three ready-to-publish artifacts.
-- Prevented physical ESPHome companion files from appearing as duplicate wake words in the trainer catalog.
+- Fixed standalone and automated macOS CLI training by preparing its required speech QA environment before synthesis begins.
+- Added an early dependency check so a missing Faster Whisper or Silero VAD installation fails immediately instead of wasting hours generating unusable samples.
+- Kept OmniVoice multiprocessing sockets on local macOS storage while allowing generated samples, model caches, and other large training data to remain on external storage.
+- Preserved the existing app and web UI environment without changing their training flow.

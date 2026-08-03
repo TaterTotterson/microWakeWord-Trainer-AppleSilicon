@@ -283,6 +283,13 @@ class Generator:
         self.env["HF_HOME"] = str(self.hf_home)
         self.env["HUGGINGFACE_HUB_CACHE"] = str(self.hf_home / "hub")
         self.env["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+        self.omnivoice_env = dict(self.env)
+        omnivoice_tmpdir = os.environ.get("MWW_OMNIVOICE_TMPDIR", "").strip()
+        if omnivoice_tmpdir:
+            omnivoice_tmp_path = Path(omnivoice_tmpdir).expanduser().resolve()
+            omnivoice_tmp_path.mkdir(parents=True, exist_ok=True)
+            for name in ("TMPDIR", "TMP", "TEMP"):
+                self.omnivoice_env[name] = str(omnivoice_tmp_path)
         self.speed_by_path: dict[Path, float] = {}
         self.actual_counts: dict[str, int] = {}
         self.reference_qa_batch = 0
@@ -404,7 +411,7 @@ class Generator:
             self.omnivoice_language,
         ] + omnivoice_stability_args()
         try:
-            run_with_batch_retry(prompt_command, prompt_batch_flag, env=self.env)
+            run_with_batch_retry(prompt_command, prompt_batch_flag, env=self.omnivoice_env)
         except subprocess.CalledProcessError as error:
             log(f"⚠️ Voice seed batch exited early; checking individual outputs: {error}")
 
@@ -431,7 +438,7 @@ class Generator:
             retry_command[retry_command.index(prompt_input_flag) + 1] = str(retry_input)
             retry_command[retry_command.index(prompt_batch_flag) + 1] = "1"
             try:
-                run(retry_command, env=self.env)
+                run(retry_command, env=self.omnivoice_env)
             except subprocess.CalledProcessError as error:
                 log(f"⚠️ Voice seed repair round {retry_round} exited early: {error}")
 
@@ -481,7 +488,7 @@ class Generator:
         ] + omnivoice_stability_args()
         if not entries:
             return []
-        run_with_batch_retry(clone_command, "--batch_size", env=self.env)
+        run_with_batch_retry(clone_command, "--batch_size", env=self.omnivoice_env)
         return entries
 
     def _generate_qwen_bank(self, count: int, destination: Path, start: int = 0) -> list[dict]:
@@ -832,6 +839,7 @@ class Generator:
             OMNIVOICE_CORPUS_RETRY_ROUNDS if speech_only else MOSS_CORPUS_RETRY_ROUNDS
         )
         gate_name = "speech" if speech_only else "semantic"
+        engine_env = self.omnivoice_env if engine == ENGINE_OMNIVOICE else self.env
         for qa_round in range(1, retry_rounds + 2):
             if engine == ENGINE_MOSS:
                 for item_id in pending:
@@ -889,7 +897,7 @@ class Generator:
                     qa_command.append("--speech-only")
                 run(
                     qa_command,
-                    env=self.env,
+                    env=engine_env,
                 )
                 round_accepted = {
                     result["id"]
@@ -926,9 +934,9 @@ class Generator:
             retry_command = list(generation_command)
             retry_command[retry_command.index(input_flag) + 1] = str(retry_input)
             if batch_flag:
-                run_with_batch_retry(retry_command, batch_flag, env=self.env)
+                run_with_batch_retry(retry_command, batch_flag, env=engine_env)
             else:
-                run(retry_command, env=self.env)
+                run(retry_command, env=engine_env)
         return [
             destination / f"{entry['id']}.wav"
             for entry in entries
@@ -987,7 +995,7 @@ class Generator:
             run_with_batch_retry(
                 generation_command,
                 "--batch_size",
-                env=self.env,
+                env=self.omnivoice_env,
             )
             return self._repair_generated_corpus(
                 engine,
@@ -1180,7 +1188,7 @@ class Generator:
                 "--postprocess_output",
                 "True",
             ] + omnivoice_stability_args()
-            run_with_batch_retry(command, "--batch_size", env=self.env)
+            run_with_batch_retry(command, "--batch_size", env=self.omnivoice_env)
         elif engine == ENGINE_QWEN3:
             command = [
                 str(python),
