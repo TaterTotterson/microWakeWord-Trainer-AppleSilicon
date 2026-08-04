@@ -526,6 +526,38 @@ class ModernTtsTests(unittest.TestCase):
             self.assertTrue(generator_module.valid_reference(tone))
             self.assertFalse(generator_module.valid_sample(silence))
 
+    def test_normalization_stops_after_the_first_ffmpeg_runtime_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            args = argparse.Namespace(
+                phrase="hey_tater",
+                language="en",
+                tts_mode="modern",
+                samples=2,
+                batch_size=4,
+                voice_count=2,
+                data_dir=data_dir,
+                output_dir=data_dir / "work" / "samples",
+                ffmpeg="/opt/homebrew/opt/ffmpeg@7/bin/ffmpeg",
+                dry_run=False,
+                piper_models=[],
+            )
+            instance = generator_module.Generator(args)
+            paths = [data_dir / "first.wav", data_dir / "second.wav"]
+            for path in paths:
+                write_tone(path)
+            failed = subprocess.CompletedProcess(
+                args=[args.ffmpeg],
+                returncode=-6,
+                stdout="",
+                stderr="dyld: Library not loaded: libbluray.2.dylib",
+            )
+            with patch.object(generator_module.subprocess, "run", return_value=failed) as run:
+                with self.assertRaisesRegex(RuntimeError, "FFmpeg failed during audio normalization"):
+                    instance.normalize(paths, 0, 2)
+
+        self.assertEqual(run.call_count, 1)
+
     def test_provider_safety_gate_rejects_static_and_rambling(self) -> None:
         clean = {
             "duration": 1.2,
@@ -637,6 +669,10 @@ class ModernTtsTests(unittest.TestCase):
         self.assertIn('if [[ -n "${REC_VENV_DIR:-}" ]]', training_script)
         self.assertIn('${SUPPORT_DIR}/cli-reference-qa-venv', training_script)
         self.assertIn('export MWW_OMNIVOICE_TMPDIR=', training_script)
+        self.assertIn('FFMPEG_BIN="$FFMPEG_PREFIX/bin/ffmpeg"', training_script)
+        self.assertIn('"--ffmpeg" "$FFMPEG_BIN"', training_script)
+        self.assertIn("ffmpeg_health_check", training_script)
+        self.assertIn('select_ffmpeg_formula "ffmpeg"', training_script)
         setup_script = (REPO_ROOT / "scripts_macos" / "setup_modern_tts_envs").read_text(encoding="utf-8")
         self.assertIn("mlx-audio[tts]", setup_script)
         self.assertIn("torch==2.8.0", setup_script)

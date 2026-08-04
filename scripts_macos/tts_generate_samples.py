@@ -69,6 +69,10 @@ DIRECT_CANDIDATE_FACTORS = {
     ENGINE_PIPER: 1.05,
 }
 
+
+class FFmpegRuntimeError(RuntimeError):
+    """The selected FFmpeg executable cannot perform required normalization."""
+
 CARRIER_PROMPT_TEMPLATES = {
     "ar": "بصوت هادئ وطبيعي أقول {phrase} بوضوح، ثم أواصل الحديث بإيقاع ثابت.",
     "cs": "Klidným a přirozeným hlasem zřetelně řeknu {phrase} a potom pokračuji rovnoměrným tempem.",
@@ -1309,10 +1313,21 @@ class Generator:
                 str(temp_path),
             ]
             try:
-                subprocess.run(command, check=True)
-            except subprocess.CalledProcessError:
+                result = subprocess.run(command, capture_output=True, text=True)
+            except OSError as error:
                 temp_path.unlink(missing_ok=True)
-                continue
+                raise FFmpegRuntimeError(
+                    f"FFmpeg could not start during audio normalization: {error}"
+                ) from error
+            if result.returncode != 0:
+                temp_path.unlink(missing_ok=True)
+                detail = (result.stderr or result.stdout or "unknown FFmpeg error").strip()
+                detail_lines = [line.strip() for line in detail.splitlines() if line.strip()]
+                summary = detail_lines[-1] if detail_lines else "unknown FFmpeg error"
+                raise FFmpegRuntimeError(
+                    f"FFmpeg failed during audio normalization using "
+                    f"{self.args.ffmpeg}: {summary}"
+                )
             digest = hashlib.sha256(temp_path.read_bytes()).hexdigest() if temp_path.is_file() else ""
             if valid_sample(temp_path) and digest and digest not in self.accepted_hashes:
                 temp_path.replace(final_path)
@@ -1369,6 +1384,8 @@ class Generator:
                 if normalized:
                     successful_engines.append(engine)
                 log(f"✅ {engine}: accepted {len(normalized)} normalized sample(s)")
+            except FFmpegRuntimeError:
+                raise
             except Exception as error:
                 self.actual_counts[engine] = 0
                 log(f"⚠️ {engine} generation failed; another engine will fill its share: {error}")
@@ -1401,6 +1418,8 @@ class Generator:
                 normalized = self.normalize(qualified_paths, len(accepted), missing)
                 accepted.extend(normalized)
                 self.actual_counts[engine] = self.actual_counts.get(engine, 0) + len(normalized)
+            except FFmpegRuntimeError:
+                raise
             except Exception as error:
                 log(f"⚠️ {engine} fallback failed: {error}")
             missing = self.args.samples - len(accepted)
@@ -1476,7 +1495,10 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--data-dir", type=Path, default=default_data_dir)
     result.add_argument("--output-dir", type=Path, required=True)
-    result.add_argument("--ffmpeg", default=shutil.which("ffmpeg") or "ffmpeg")
+    result.add_argument(
+        "--ffmpeg",
+        default=os.environ.get("MWW_FFMPEG_BIN") or shutil.which("ffmpeg") or "ffmpeg",
+    )
     result.add_argument("--dry-run", action="store_true")
     return result
 

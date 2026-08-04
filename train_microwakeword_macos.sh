@@ -71,22 +71,78 @@ if ! command -v brew &>/dev/null; then
   exit 1
 fi
 
-echo "📦 Ensuring ffmpeg@7 + wget are installed (via Homebrew)…"
+echo "📦 Ensuring FFmpeg + wget are installed (via Homebrew)…"
 
 # wget first
 brew list wget &>/dev/null || brew install wget
 
-# prefer ffmpeg@7 for stable audio tooling compatibility
+ffmpeg_health_check() {
+  [[ -x "$FFMPEG_BIN" ]] && "$FFMPEG_BIN" \
+    -nostdin \
+    -hide_banner \
+    -loglevel error \
+    -f lavfi \
+    -i "anullsrc=r=16000:cl=mono" \
+    -t 0.05 \
+    -ac 1 \
+    -ar 16000 \
+    -c:a pcm_s16le \
+    -f null \
+    - >/dev/null 2>&1
+}
+
+repair_selected_ffmpeg() {
+  echo "🧯 $FFMPEG_FORMULA health check failed; attempting one Homebrew repair…"
+  # Repair the dependency from the observed dyld failure when it is present,
+  # then reinstall the selected FFmpeg formula so all links are refreshed.
+  if brew list libbluray &>/dev/null; then
+    brew reinstall libbluray || true
+  fi
+  brew reinstall "$FFMPEG_FORMULA" || true
+}
+
+select_ffmpeg_formula() {
+  FFMPEG_FORMULA="$1"
+  brew list "$FFMPEG_FORMULA" &>/dev/null || brew install "$FFMPEG_FORMULA"
+  FFMPEG_PREFIX="$(brew --prefix "$FFMPEG_FORMULA")"
+  FFMPEG_BIN="$FFMPEG_PREFIX/bin/ffmpeg"
+}
+
+# Prefer ffmpeg@7 for stable audio tooling compatibility. Keep the selected
+# formula and executable paired; mixing one formula's libraries with another
+# ffmpeg from PATH can leave normalization unusable after a Homebrew cleanup.
 if brew info ffmpeg@7 &>/dev/null; then
-  brew list ffmpeg@7 &>/dev/null || brew install ffmpeg@7
-  FFMPEG_PREFIX="$(brew --prefix ffmpeg@7)"
-  echo "✅ Using ffmpeg@7 at $FFMPEG_PREFIX"
+  select_ffmpeg_formula "ffmpeg@7"
+  if ! ffmpeg_health_check; then
+    repair_selected_ffmpeg
+    select_ffmpeg_formula "ffmpeg@7"
+  fi
+  if ! ffmpeg_health_check; then
+    echo "⚠️ ffmpeg@7 is still unhealthy; trying the default FFmpeg formula."
+    select_ffmpeg_formula "ffmpeg"
+  fi
 else
-  # fallback if ffmpeg@7 isn’t available on this Homebrew
-  brew list ffmpeg &>/dev/null || brew install ffmpeg
-  FFMPEG_PREFIX="$(brew --prefix ffmpeg)"
-  echo "⚠️ ffmpeg@7 not found; using default ffmpeg instead"
+  echo "⚠️ ffmpeg@7 is unavailable; using the default FFmpeg formula."
+  select_ffmpeg_formula "ffmpeg"
 fi
+
+if ! ffmpeg_health_check; then
+  repair_selected_ffmpeg
+  select_ffmpeg_formula "$FFMPEG_FORMULA"
+fi
+if ! ffmpeg_health_check; then
+  echo "❌ FFmpeg is installed but cannot perform a basic audio conversion."
+  echo "   Selected executable: $FFMPEG_BIN"
+  echo "   Repair manually with: brew reinstall libbluray $FFMPEG_FORMULA"
+  "$FFMPEG_BIN" -version || true
+  exit 1
+fi
+
+export FFMPEG_BIN
+export MWW_FFMPEG_BIN="$FFMPEG_BIN"
+export PATH="$FFMPEG_PREFIX/bin:$PATH"
+FFMPEG_VERSION_OUTPUT="$("$FFMPEG_BIN" -version 2>/dev/null)"
+echo "✅ Using $(printf '%s\n' "$FFMPEG_VERSION_OUTPUT" | sed -n '1p')"
 
 # Make the chosen ffmpeg visible to local audio tooling on macOS (ARM sometimes needs DYLD_*)
 FFMPEG_LIB_DIR="$FFMPEG_PREFIX/lib"
@@ -568,6 +624,7 @@ if [[ "$sample_cache_hit" != "true" ]]; then
     "--voice-count" "$TTS_VOICE_COUNT"
     "--data-dir" "$WORK_DIR"
     "--output-dir" "generated_samples"
+    "--ffmpeg" "$FFMPEG_BIN"
   )
   for model_path in "${PIPER_MODELS[@]}"; do
     generator_cmd+=("--piper-model" "$model_path")
