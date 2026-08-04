@@ -766,11 +766,11 @@ fi
 
 # ── (J) package artifacts (name by wake word) ─────────────────────────────────
 echo "📦 Packaging final model artifacts…"
-"$PY" "$SOURCE_DIR/scripts_macos/package_model.py" \\
-  "$TARGET_WORD" \\
-  "$LANGUAGE" \\
-  "$CALIBRATION_JSON" \\
-  --output-dir "${TRAINED_WAKE_WORDS_DIR:-trained_wake_words}" \\
+"$PY" "$SOURCE_DIR/scripts_macos/package_model.py" \
+  "$TARGET_WORD" \
+  "$LANGUAGE" \
+  "$CALIBRATION_JSON" \
+  --output-dir "${TRAINED_WAKE_WORDS_DIR:-trained_wake_words}" \
   --name-by-wake-word
 
 echo "🎉 Done."

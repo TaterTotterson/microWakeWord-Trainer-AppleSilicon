@@ -751,6 +751,16 @@ class ModernTtsTests(unittest.TestCase):
         self.assertIn('"--ffmpeg" "$FFMPEG_BIN"', training_script)
         self.assertIn("ffmpeg_health_check", training_script)
         self.assertIn('select_ffmpeg_formula "ffmpeg"', training_script)
+        packaging_lines = training_script.splitlines()
+        packaging_start = next(
+            index
+            for index, line in enumerate(packaging_lines)
+            if 'scripts_macos/package_model.py' in line
+        )
+        for line in packaging_lines[packaging_start : packaging_start + 5]:
+            self.assertTrue(line.endswith("\\"), line)
+            self.assertFalse(line.endswith("\\\\"), line)
+        self.assertIn("--name-by-wake-word", packaging_lines[packaging_start + 5])
         setup_script = (REPO_ROOT / "scripts_macos" / "setup_modern_tts_envs").read_text(encoding="utf-8")
         self.assertIn("mlx-audio[tts]", setup_script)
         self.assertIn("torch==2.8.0", setup_script)

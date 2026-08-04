@@ -1,1 +1,1 @@
-- Prevented a single malformed or stalled TTS clip from aborting an entire corpus after hours of generation; the clip is now reported, skipped, and replaced automatically.
+- Corrected final packaging so completed models are always saved under the requested wake word with valid Tater and ESPHome JSON files.
