@@ -528,7 +528,7 @@ class ModernTtsTests(unittest.TestCase):
             self.assertTrue(generator_module.valid_reference(tone))
             self.assertFalse(generator_module.valid_sample(silence))
 
-    def test_normalization_stops_after_the_first_ffmpeg_runtime_failure(self) -> None:
+    def test_normalization_skips_a_failed_clip_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
             args = argparse.Namespace(
@@ -548,17 +548,92 @@ class ModernTtsTests(unittest.TestCase):
             paths = [data_dir / "first.wav", data_dir / "second.wav"]
             for path in paths:
                 write_tone(path)
-            failed = subprocess.CompletedProcess(
-                args=[args.ffmpeg],
-                returncode=-6,
-                stdout="",
-                stderr="dyld: Library not loaded: libbluray.2.dylib",
-            )
-            with patch.object(generator_module.subprocess, "run", return_value=failed) as run:
-                with self.assertRaisesRegex(RuntimeError, "FFmpeg failed during audio normalization"):
-                    instance.normalize(paths, 0, 2)
+            def run_ffmpeg(command, **kwargs):
+                if Path(command[command.index("-i") + 1]) == paths[0]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=-6,
+                        stdout="",
+                        stderr="Assertion best_input >= 0 failed at fftools/ffmpeg_filter.c:2122",
+                    )
+                write_tone(Path(command[-1]))
+                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
 
-        self.assertEqual(run.call_count, 1)
+            with patch.object(generator_module.subprocess, "run", side_effect=run_ffmpeg) as run:
+                normalized = instance.normalize(paths, 0, 2)
+
+            self.assertEqual(normalized, [instance.final_dir / "0.wav"])
+            self.assertEqual(instance.normalization_rejections["ffmpeg_failed"], 1)
+            self.assertIn("-nostdin", run.call_args_list[0].args[0])
+            self.assertEqual(
+                run.call_args_list[0].kwargs["timeout"],
+                generator_module.FFMPEG_CLIP_TIMEOUT_SECONDS,
+            )
+        self.assertEqual(run.call_count, 2)
+
+    def test_normalization_skips_a_timed_out_clip_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            args = argparse.Namespace(
+                phrase="hey_tater",
+                language="en",
+                tts_mode="modern",
+                samples=2,
+                batch_size=4,
+                voice_count=2,
+                data_dir=data_dir,
+                output_dir=data_dir / "work" / "samples",
+                ffmpeg="ffmpeg",
+                dry_run=False,
+                piper_models=[],
+            )
+            instance = generator_module.Generator(args)
+            paths = [data_dir / "first.wav", data_dir / "second.wav"]
+            for path in paths:
+                write_tone(path)
+
+            def run_ffmpeg(command, **kwargs):
+                if Path(command[command.index("-i") + 1]) == paths[0]:
+                    raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                write_tone(Path(command[-1]))
+                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+            with patch.object(generator_module.subprocess, "run", side_effect=run_ffmpeg) as run:
+                normalized = instance.normalize(paths, 0, 2)
+
+            self.assertEqual(normalized, [instance.final_dir / "0.wav"])
+            self.assertEqual(instance.normalization_rejections["ffmpeg_timeout"], 1)
+            self.assertEqual(run.call_count, 2)
+
+    def test_normalization_still_fails_if_ffmpeg_cannot_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            args = argparse.Namespace(
+                phrase="hey_tater",
+                language="en",
+                tts_mode="modern",
+                samples=1,
+                batch_size=1,
+                voice_count=1,
+                data_dir=data_dir,
+                output_dir=data_dir / "work" / "samples",
+                ffmpeg="/missing/ffmpeg",
+                dry_run=False,
+                piper_models=[],
+            )
+            instance = generator_module.Generator(args)
+            source = data_dir / "source.wav"
+            write_tone(source)
+            with patch.object(
+                generator_module.subprocess,
+                "run",
+                side_effect=OSError("executable not found"),
+            ):
+                with self.assertRaisesRegex(
+                    generator_module.FFmpegRuntimeError,
+                    "FFmpeg could not start",
+                ):
+                    instance.normalize([source], 0, 1)
 
     def test_provider_safety_gate_rejects_static_and_rambling(self) -> None:
         clean = {

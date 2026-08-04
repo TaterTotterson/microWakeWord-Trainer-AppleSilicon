@@ -43,7 +43,7 @@ from tts_config import (  # noqa: E402
 )
 
 
-GENERATOR_VERSION = "modern-tts-apple-v15-four-provider-direct-corpus-safe-limits"
+GENERATOR_VERSION = "modern-tts-apple-v16-four-provider-direct-corpus-safe-limits"
 VOICE_BANK_VERSION = "modern-tts-voice-bank-v1-native-random-qualified-single-utterance"
 COMPATIBLE_VOICE_BANK_VERSIONS = {
     VOICE_BANK_VERSION,
@@ -70,6 +70,7 @@ DIRECT_CANDIDATE_FACTORS = {
 }
 OMNIVOICE_SOCKET_PATH_LIMIT = 104
 OMNIVOICE_SOCKET_SUFFIX_RESERVE = 52
+FFMPEG_CLIP_TIMEOUT_SECONDS = 30.0
 
 
 class FFmpegRuntimeError(RuntimeError):
@@ -320,6 +321,7 @@ class Generator:
         self.reference_qa_batch = 0
         self.accepted_hashes: set[str] = set()
         self.direct_attempt = Counter()
+        self.normalization_rejections = Counter()
         self.minimum_duration, self.target_duration, self.maximum_duration = duration_bounds(
             self.spoken_phrase, self.args.language
         )
@@ -1316,6 +1318,7 @@ class Generator:
             temp_path = final_path.with_suffix(".tmp.wav")
             command = [
                 self.args.ffmpeg,
+                "-nostdin",
                 "-hide_banner",
                 "-loglevel",
                 "error",
@@ -1334,7 +1337,20 @@ class Generator:
                 str(temp_path),
             ]
             try:
-                result = subprocess.run(command, capture_output=True, text=True)
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=FFMPEG_CLIP_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                temp_path.unlink(missing_ok=True)
+                self.normalization_rejections["ffmpeg_timeout"] += 1
+                log(
+                    f"⚠️ Skipping {path.name}: FFmpeg normalization exceeded "
+                    f"{FFMPEG_CLIP_TIMEOUT_SECONDS:g}s"
+                )
+                continue
             except OSError as error:
                 temp_path.unlink(missing_ok=True)
                 raise FFmpegRuntimeError(
@@ -1345,10 +1361,9 @@ class Generator:
                 detail = (result.stderr or result.stdout or "unknown FFmpeg error").strip()
                 detail_lines = [line.strip() for line in detail.splitlines() if line.strip()]
                 summary = detail_lines[-1] if detail_lines else "unknown FFmpeg error"
-                raise FFmpegRuntimeError(
-                    f"FFmpeg failed during audio normalization using "
-                    f"{self.args.ffmpeg}: {summary}"
-                )
+                self.normalization_rejections["ffmpeg_failed"] += 1
+                log(f"⚠️ Skipping {path.name}: FFmpeg normalization failed: {summary}")
+                continue
             digest = hashlib.sha256(temp_path.read_bytes()).hexdigest() if temp_path.is_file() else ""
             if valid_sample(temp_path) and digest and digest not in self.accepted_hashes:
                 temp_path.replace(final_path)
@@ -1356,6 +1371,7 @@ class Generator:
                 accepted.append(final_path)
             else:
                 temp_path.unlink(missing_ok=True)
+                self.normalization_rejections["invalid_or_duplicate"] += 1
         return accepted
 
     def generate(self) -> None:
@@ -1482,6 +1498,8 @@ class Generator:
                 "qwen_max_acoustic_tokens": 48,
                 "moss_max_acoustic_tokens": 64,
                 "omnivoice_fixed_short_duration": True,
+                "ffmpeg_clip_timeout_seconds": FFMPEG_CLIP_TIMEOUT_SECONDS,
+                "normalization_rejections": dict(self.normalization_rejections),
             },
         }
         (self.final_dir / ".generation_manifest.json").write_text(

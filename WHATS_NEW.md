@@ -1,1 +1,1 @@
-- Prevented OmniVoice from failing with `AF_UNIX path too long` by using a short, validated multiprocessing socket directory in both app and CLI training.
+- Prevented a single malformed or stalled TTS clip from aborting an entire corpus after hours of generation; the clip is now reported, skipped, and replaced automatically.
