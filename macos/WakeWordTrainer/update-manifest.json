@@ -1,7 +1,7 @@
 {
-  "version": "28",
-  "build": 28,
-  "url": "https://raw.githubusercontent.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/main/macos/WakeWordTrainer/releases/WakeWordTrainer-v28.zip",
-  "sha256": "54153995bc6efcefa9021ab86d3beecc055abdb678072710ca9096ccd0624e07",
-  "notes": "WakeWord Trainer macOS update v28."
+  "version": "29",
+  "build": 29,
+  "url": "https://raw.githubusercontent.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/main/macos/WakeWordTrainer/releases/WakeWordTrainer-v29.zip",
+  "sha256": "d39a6ed12e0b6009c2186693c3f048b46fa51e9e864ea7aea9358e0b3c051ca9",
+  "notes": "WakeWord Trainer macOS update v29."
 }
