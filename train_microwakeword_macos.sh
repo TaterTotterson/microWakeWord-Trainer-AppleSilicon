@@ -223,16 +223,19 @@ ensure_reference_qa_environment() {
 }
 
 configure_cli_omnivoice_tmpdir() {
-  local local_temp_root
+  local fallback_temp socket_probe
   if [[ "$CLI_MANAGES_REFERENCE_QA" != "1" ]]; then
     return 0
   fi
+  fallback_temp="/tmp/tw-omni-$(id -u)"
   if [[ -z "${MWW_OMNIVOICE_TMPDIR:-}" ]]; then
-    local_temp_root="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
-    if [[ -z "$local_temp_root" || ! -d "$local_temp_root" ]]; then
-      local_temp_root="/tmp"
+    export MWW_OMNIVOICE_TMPDIR="$fallback_temp"
+  else
+    socket_probe="${MWW_OMNIVOICE_TMPDIR%/}/pymp-12345678/listener-1234567890abcdef"
+    if (( ${#socket_probe} >= 104 )); then
+      echo "⚠️ OmniVoice socket temp path is too long; using $fallback_temp"
+      export MWW_OMNIVOICE_TMPDIR="$fallback_temp"
     fi
-    export MWW_OMNIVOICE_TMPDIR="${local_temp_root%/}/tater-wake-omnivoice"
   fi
   mkdir -p "$MWW_OMNIVOICE_TMPDIR"
   chmod 700 "$MWW_OMNIVOICE_TMPDIR" 2>/dev/null || true

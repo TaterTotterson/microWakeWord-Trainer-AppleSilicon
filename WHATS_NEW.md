@@ -1,2 +1,1 @@
-- Made macOS CLI training select and verify a working Homebrew FFmpeg installation before generating samples, with automatic repair and a clear early failure when conversion is unavailable.
-- Kept primary and guided STT results visible after captures are automatically sorted into positive or negative training samples.
+- Prevented OmniVoice from failing with `AF_UNIX path too long` by using a short, validated multiprocessing socket directory in both app and CLI training.

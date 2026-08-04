@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import math
+import os
 import shutil
 import subprocess
 import tempfile
@@ -95,10 +96,11 @@ class ModernTtsTests(unittest.TestCase):
                 clear=False,
             ):
                 instance = generator_module.Generator(args)
+            selected_temp = generator_module.select_omnivoice_tmpdir(str(omnivoice_temp))
             self.assertEqual(instance.env["TMPDIR"], "/Volumes/External/tater-wake-tmp")
-            self.assertEqual(instance.omnivoice_env["TMPDIR"], str(omnivoice_temp.resolve()))
-            self.assertEqual(instance.omnivoice_env["TMP"], str(omnivoice_temp.resolve()))
-            self.assertTrue(omnivoice_temp.is_dir())
+            self.assertEqual(instance.omnivoice_env["TMPDIR"], str(selected_temp))
+            self.assertEqual(instance.omnivoice_env["TMP"], str(selected_temp))
+            self.assertTrue(selected_temp.is_dir())
 
     def test_omnivoice_uses_a_hidden_stable_prompt_before_short_clone(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -669,6 +671,7 @@ class ModernTtsTests(unittest.TestCase):
         self.assertIn('if [[ -n "${REC_VENV_DIR:-}" ]]', training_script)
         self.assertIn('${SUPPORT_DIR}/cli-reference-qa-venv', training_script)
         self.assertIn('export MWW_OMNIVOICE_TMPDIR=', training_script)
+        self.assertIn('fallback_temp="/tmp/tw-omni-$(id -u)"', training_script)
         self.assertIn('FFMPEG_BIN="$FFMPEG_PREFIX/bin/ffmpeg"', training_script)
         self.assertIn('"--ffmpeg" "$FFMPEG_BIN"', training_script)
         self.assertIn("ffmpeg_health_check", training_script)
@@ -681,6 +684,41 @@ class ModernTtsTests(unittest.TestCase):
         self.assertIn('v-model="trainer.ttsMode"', ui)
         self.assertIn("tts_mode: trainer.ttsMode", store)
         self.assertIn("OmniVoice", store)
+
+    def test_omnivoice_socket_temp_falls_back_from_long_macos_path(self) -> None:
+        long_path = "/var/folders/" + ("x" * 80) + "/T/tater-wake-omnivoice"
+        selected = generator_module.select_omnivoice_tmpdir(long_path)
+        expected = (Path("/tmp") / f"tw-omni-{os.getuid()}").resolve()
+
+        self.assertEqual(selected, expected)
+        self.assertLess(
+            len(os.fsencode(str(selected))) + generator_module.OMNIVOICE_SOCKET_SUFFIX_RESERVE,
+            generator_module.OMNIVOICE_SOCKET_PATH_LIMIT,
+        )
+
+    def test_omnivoice_environment_uses_short_socket_temp_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            args = argparse.Namespace(
+                phrase="hey_tater",
+                language="en",
+                tts_mode="modern",
+                samples=1,
+                batch_size=1,
+                voice_count=1,
+                data_dir=data_dir,
+                output_dir=data_dir / "work" / "samples",
+                ffmpeg="ffmpeg",
+                dry_run=False,
+                piper_models=[],
+            )
+            with patch.dict(os.environ, {"MWW_OMNIVOICE_TMPDIR": ""}):
+                instance = generator_module.Generator(args)
+
+        selected = instance.omnivoice_env["TMPDIR"]
+        self.assertTrue(selected.startswith(("/tmp/", "/private/tmp/")))
+        self.assertEqual(instance.omnivoice_env["TMP"], selected)
+        self.assertEqual(instance.omnivoice_env["TEMP"], selected)
 
 
 if __name__ == "__main__":

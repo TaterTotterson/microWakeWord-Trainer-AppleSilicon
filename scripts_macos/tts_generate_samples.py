@@ -68,10 +68,27 @@ DIRECT_CANDIDATE_FACTORS = {
     ENGINE_MOSS: 1.25,
     ENGINE_PIPER: 1.05,
 }
+OMNIVOICE_SOCKET_PATH_LIMIT = 104
+OMNIVOICE_SOCKET_SUFFIX_RESERVE = 52
 
 
 class FFmpegRuntimeError(RuntimeError):
     """The selected FFmpeg executable cannot perform required normalization."""
+
+
+def select_omnivoice_tmpdir(configured: str = "") -> Path:
+    """Return a macOS-safe base directory for OmniVoice manager sockets."""
+
+    fallback = (Path("/tmp") / f"tw-omni-{os.getuid()}").resolve()
+    value = configured.strip()
+    if not value:
+        return fallback
+    candidate = Path(value).expanduser().resolve()
+    projected_length = len(os.fsencode(str(candidate))) + OMNIVOICE_SOCKET_SUFFIX_RESERVE
+    if projected_length >= OMNIVOICE_SOCKET_PATH_LIMIT:
+        return fallback
+    return candidate
+
 
 CARRIER_PROMPT_TEMPLATES = {
     "ar": "بصوت هادئ وطبيعي أقول {phrase} بوضوح، ثم أواصل الحديث بإيقاع ثابت.",
@@ -288,12 +305,16 @@ class Generator:
         self.env["HUGGINGFACE_HUB_CACHE"] = str(self.hf_home / "hub")
         self.env["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
         self.omnivoice_env = dict(self.env)
-        omnivoice_tmpdir = os.environ.get("MWW_OMNIVOICE_TMPDIR", "").strip()
-        if omnivoice_tmpdir:
-            omnivoice_tmp_path = Path(omnivoice_tmpdir).expanduser().resolve()
-            omnivoice_tmp_path.mkdir(parents=True, exist_ok=True)
-            for name in ("TMPDIR", "TMP", "TEMP"):
-                self.omnivoice_env[name] = str(omnivoice_tmp_path)
+        configured_omnivoice_tmpdir = os.environ.get("MWW_OMNIVOICE_TMPDIR", "")
+        omnivoice_tmp_path = select_omnivoice_tmpdir(configured_omnivoice_tmpdir)
+        if configured_omnivoice_tmpdir.strip():
+            requested_path = Path(configured_omnivoice_tmpdir).expanduser().resolve()
+            if requested_path != omnivoice_tmp_path:
+                log(f"⚠️ OmniVoice socket temp path is too long; using {omnivoice_tmp_path}")
+        omnivoice_tmp_path.mkdir(parents=True, exist_ok=True)
+        self.omnivoice_env["MWW_OMNIVOICE_TMPDIR"] = str(omnivoice_tmp_path)
+        for name in ("TMPDIR", "TMP", "TEMP"):
+            self.omnivoice_env[name] = str(omnivoice_tmp_path)
         self.speed_by_path: dict[Path, float] = {}
         self.actual_counts: dict[str, int] = {}
         self.reference_qa_batch = 0
