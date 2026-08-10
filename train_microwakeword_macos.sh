@@ -3,7 +3,7 @@
 # One-shot: setup (idempotent) + run pipeline on Apple Silicon (macOS).
 # Usage:
 #   ./train_microwakeword_macos.sh "hey_tater" 50000 100 \
-#       --language en --tts-mode hybrid \
+#       --language en --english-accent mixed --tts-mode hybrid \
 #       --piper-model /path/to/voice1.onnx --piper-model /path/to/voice2.pt
 #
 # Hybrid uses Piper as a fourth source when a compatible model is present.
@@ -27,6 +27,7 @@ BATCH_SIZE="${3:-100}"
 
 # Default language can be overridden by --language or MWW_LANGUAGE
 LANGUAGE="${MWW_LANGUAGE:-en}"
+ENGLISH_ACCENT="${MWW_ENGLISH_ACCENT:-mixed}"
 TTS_MODE="${MWW_TTS_MODE:-hybrid}"
 TTS_VOICE_COUNT="${MWW_TTS_VOICE_COUNT:-128}"
 
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --piper-model) PIPER_MODELS+=("$2"); shift 2 ;;
     --language) LANGUAGE="${2:-}"; shift 2 ;;
+    --english-accent) ENGLISH_ACCENT="${2:-}"; shift 2 ;;
     --tts-mode) TTS_MODE="${2:-}"; shift 2 ;;
     --tts-voice-count) TTS_VOICE_COUNT="${2:-}"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
@@ -48,6 +50,19 @@ if [[ -z "$LANGUAGE" ]]; then
 fi
 export MWW_LANGUAGE="$LANGUAGE"
 echo "🌐 Training language: $LANGUAGE"
+
+ENGLISH_ACCENT="$(echo "${ENGLISH_ACCENT}" | tr '[:upper:] -' '[:lower:]__')"
+if [[ "$LANGUAGE" != "en" ]]; then
+  ENGLISH_ACCENT="mixed"
+fi
+case "$ENGLISH_ACCENT" in
+  mixed|australian|american|british|canadian|irish|scottish|new_zealand|indian|south_african) ;;
+  *) echo "❌ Invalid English accent '${ENGLISH_ACCENT}'."; exit 1 ;;
+esac
+export MWW_ENGLISH_ACCENT="$ENGLISH_ACCENT"
+if [[ "$LANGUAGE" == "en" ]]; then
+  echo "🎙️  English accent emphasis: $ENGLISH_ACCENT"
+fi
 
 TTS_MODE="$(echo "${TTS_MODE}" | tr '[:upper:]' '[:lower:]')"
 case "$TTS_MODE" in
@@ -525,6 +540,7 @@ compute_sample_cache_key() {
     printf 'samples=%s\n' "$MAX_TTS_SAMPLES"
     printf 'batch=%s\n' "$BATCH_SIZE"
     printf 'language=%s\n' "$LANGUAGE"
+    printf 'english_accent=%s\n' "$ENGLISH_ACCENT"
     printf 'tts_mode=%s\n' "$TTS_MODE"
     for generator_file in \
       "$SOURCE_DIR/tts_config.py" \
@@ -621,6 +637,7 @@ if [[ "$sample_cache_hit" != "true" ]]; then
     "$SOURCE_DIR/scripts_macos/tts_generate_samples.py"
     "$TARGET_WORD"
     "--language" "$LANGUAGE"
+    "--english-accent" "$ENGLISH_ACCENT"
     "--tts-mode" "$TTS_MODE"
     "--samples" "$MAX_TTS_SAMPLES"
     "--batch-size" "$BATCH_SIZE"

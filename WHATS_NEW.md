@@ -1,1 +1,1 @@
-- Corrected final packaging so completed models are always saved under the requested wake word with valid Tater and ESPHome JSON files.
+- Added English accent emphasis for Mixed English, Australian, American, British, Canadian, Irish, Scottish, New Zealand, Indian, and South African voices. Qwen shapes the selected accent and MOSS carries it into cloned references, with the setting available in both manual and automatic training.
