@@ -90,7 +90,9 @@ safe_name() {
   s="$(echo "$s" | sed -E 's/[[:space:]]+/_/g')"
   s="$(echo "$s" | sed -E 's/[^a-z0-9_]+//g')"
   s="$(echo "$s" | sed -E 's/^_+|_+$//g')"
-  [[ -n "$s" ]] || s="wakeword"
+  if [[ -z "$s" ]]; then
+    s="wakeword_$(printf '%s' "${1:-}" | shasum -a 256 | cut -c1-8)"
+  fi
   echo "$s"
 }
 
@@ -407,10 +409,10 @@ while true; do
       continue
     fi
 
-    # Train: ONLY safe word
-    log "Training: $TRAIN_SCRIPT \"${safe_word}\""
+    # Train the requested phrase; use the safe slug only for artifact names.
+    log "Training: $TRAIN_SCRIPT \"${raw_phrase}\" (artifact slug: ${safe_word})"
     set +e
-    ( cd "$ROOT_DIR" && "$TRAIN_SCRIPT" "$safe_word" )
+    ( cd "$ROOT_DIR" && MWW_ARTIFACT_SLUG="$safe_word" "$TRAIN_SCRIPT" "$raw_phrase" )
     train_rc=$?
     set -e
 

@@ -779,10 +779,12 @@ class ModernTtsTests(unittest.TestCase):
             for index, line in enumerate(packaging_lines)
             if 'scripts_macos/package_model.py' in line
         )
-        for line in packaging_lines[packaging_start : packaging_start + 5]:
+        packaging_command = packaging_lines[packaging_start : packaging_start + 7]
+        for line in packaging_command[:-1]:
             self.assertTrue(line.endswith("\\"), line)
             self.assertFalse(line.endswith("\\\\"), line)
-        self.assertIn("--name-by-wake-word", packaging_lines[packaging_start + 5])
+        self.assertIn('--artifact-slug "$ARTIFACT_SLUG"', "\n".join(packaging_command))
+        self.assertIn("--name-by-wake-word", packaging_command[-1])
         setup_script = (REPO_ROOT / "scripts_macos" / "setup_modern_tts_envs").read_text(encoding="utf-8")
         self.assertIn("mlx-audio[tts]", setup_script)
         self.assertIn("torch==2.8.0", setup_script)

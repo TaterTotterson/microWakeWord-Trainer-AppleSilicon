@@ -30,6 +30,7 @@ LANGUAGE="${MWW_LANGUAGE:-en}"
 ENGLISH_ACCENT="${MWW_ENGLISH_ACCENT:-mixed}"
 TTS_MODE="${MWW_TTS_MODE:-hybrid}"
 TTS_VOICE_COUNT="${MWW_TTS_VOICE_COUNT:-128}"
+ARTIFACT_SLUG="${MWW_ARTIFACT_SLUG:-}"
 
 # Collect optional flags
 PIPER_MODELS=()
@@ -788,6 +789,7 @@ echo "📦 Packaging final model artifacts…"
   "$LANGUAGE" \
   "$CALIBRATION_JSON" \
   --output-dir "${TRAINED_WAKE_WORDS_DIR:-trained_wake_words}" \
+  --artifact-slug "$ARTIFACT_SLUG" \
   --name-by-wake-word
 
 echo "🎉 Done."

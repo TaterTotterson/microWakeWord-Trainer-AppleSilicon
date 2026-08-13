@@ -4,6 +4,7 @@
 import contextlib
 import fcntl
 import gc
+import hashlib
 import io
 import os
 import queue
@@ -234,11 +235,15 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 def safe_name(raw: str) -> str:
-    s = (raw or "").strip().lower()
+    s = unicodedata.normalize("NFKC", raw or "").strip().lower()
+    digest_source = s
     s = re.sub(r"\s+", "_", s)
     s = re.sub(r"[^a-z0-9_]+", "", s)
     s = re.sub(r"^_+|_+$", "", s)
-    return s or "wakeword"
+    if s:
+        return s
+    digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:8]
+    return f"wakeword_{digest}"
 
 
 # -------------------- In-memory session state --------------------
@@ -3086,17 +3091,20 @@ def _run_training_background(
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
     tts_mode = normalize_tts_mode(tts_mode)
     english_accent = normalize_english_accent(english_accent, language)
-    cmd = ["bash", TRAIN_SCRIPT, safe_word]
     rc = 999
     proc: subprocess.Popen | None = None
 
     with STATE_LOCK:
+        raw_phrase = str(STATE.get("raw_phrase") or "").strip()
         STATE["training"]["running"] = True
         STATE["training"]["exit_code"] = None
         STATE["training"]["log_lines"] = []
         STATE["training"]["safe_word"] = safe_word
         log_path = str(DATA_DIR / "recorder_training.log")
         STATE["training"]["log_path"] = log_path
+
+    training_phrase = raw_phrase or safe_word
+    cmd = ["bash", TRAIN_SCRIPT, training_phrase]
 
     _append_train_log(f"→ Running: {' '.join(cmd)}")
     _append_train_log(f"→ Language: {language}")
@@ -3122,6 +3130,7 @@ def _run_training_background(
             env["MWW_TTS_MODE"] = tts_mode
             env["MWW_ENGLISH_ACCENT"] = english_accent
             env["MWW_TTS_VOICE_COUNT"] = str(DEFAULT_TTS_VOICE_COUNT)
+            env["MWW_ARTIFACT_SLUG"] = safe_word
             env["WAKEWORD_TRAINER_SUPPORT_DIR"] = str(SUPPORT_DIR)
             env["WAKEWORD_TRAINER_DATA_DIR"] = str(DATA_DIR)
             env["TRAINED_WAKE_WORDS_DIR"] = str(TRAINED_WAKE_WORDS_DIR)

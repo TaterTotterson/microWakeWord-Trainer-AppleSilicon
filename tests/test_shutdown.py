@@ -93,6 +93,7 @@ class ShutdownTests(unittest.TestCase):
         original_root = trainer.ROOT_DIR
         original_data = trainer.DATA_DIR
         original_script = trainer.TRAIN_SCRIPT
+        original_raw_phrase = trainer.STATE.get("raw_phrase")
         trainer.TRAINING_SHUTDOWN_EVENT.clear()
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -105,14 +106,26 @@ class ShutdownTests(unittest.TestCase):
                 script.write_text(
                     "#!/bin/sh\n"
                     "printf '%s\\n' \"$PWD\" > \"$WAKEWORD_TRAINER_DATA_DIR/working-directory.txt\"\n"
+                    "printf '%s\\n%s\\n%s\\n' \"$1\" \"$MWW_ARTIFACT_SLUG\" \"$MWW_LANGUAGE\" "
+                    "> \"$WAKEWORD_TRAINER_DATA_DIR/training-identity.txt\"\n"
                     "sleep 30\n",
                     encoding="utf-8",
                 )
                 trainer.ROOT_DIR = source
                 trainer.DATA_DIR = data
                 trainer.TRAIN_SCRIPT = str(script)
+                raw_phrase = "こんにちは タター"
+                safe_word = trainer.safe_name(raw_phrase)
+                with trainer.STATE_LOCK:
+                    trainer.STATE["raw_phrase"] = raw_phrase
 
-                thread = trainer._start_training_thread("hey_tater", "en", False, None)
+                thread = trainer._start_training_thread(
+                    safe_word,
+                    "ja",
+                    False,
+                    None,
+                    tts_mode="modern",
+                )
                 deadline = time.monotonic() + 3.0
                 while time.monotonic() < deadline:
                     with trainer.TRAINING_RUNTIME_LOCK:
@@ -133,6 +146,14 @@ class ShutdownTests(unittest.TestCase):
                 )
                 self.assertTrue((data / "recorder_training.log").exists())
                 self.assertFalse((source / "recorder_training.log").exists())
+                identity_file = data / "training-identity.txt"
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline and not identity_file.exists():
+                    time.sleep(0.02)
+                self.assertEqual(
+                    identity_file.read_text(encoding="utf-8").splitlines(),
+                    [raw_phrase, safe_word, "ja"],
+                )
 
                 self.assertTrue(trainer._stop_training_runtime(timeout=3.0))
                 thread.join(timeout=1.0)
@@ -142,6 +163,14 @@ class ShutdownTests(unittest.TestCase):
             trainer.ROOT_DIR = original_root
             trainer.DATA_DIR = original_data
             trainer.TRAIN_SCRIPT = original_script
+            with trainer.STATE_LOCK:
+                trainer.STATE["raw_phrase"] = original_raw_phrase
+
+    def test_non_ascii_phrase_gets_deterministic_unique_slug(self):
+        slug = trainer.safe_name("こんにちは タター")
+        self.assertRegex(slug, r"^wakeword_[0-9a-f]{8}$")
+        self.assertEqual(slug, trainer.safe_name("こんにちは タター"))
+        self.assertNotEqual(slug, trainer.safe_name("おはよう タター"))
 
     def test_server_shutdown_stops_scheduler_before_training_runtime(self):
         with (

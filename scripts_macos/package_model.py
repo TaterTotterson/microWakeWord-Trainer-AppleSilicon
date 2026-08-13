@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +35,13 @@ ESPHOME_MANIFEST_KEYS = (
 
 
 def safe_slug(wake_word: str) -> str:
-    slug = re.sub(r"[^a-z0-9_]+", "", re.sub(r"\s+", "_", wake_word.lower()))
-    return slug or "wakeword"
+    normalized = unicodedata.normalize("NFKC", wake_word or "").strip().lower()
+    slug = re.sub(r"[^a-z0-9_]+", "", re.sub(r"\s+", "_", normalized))
+    slug = re.sub(r"^_+|_+$", "", slug)
+    if slug:
+        return slug
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"wakeword_{digest}"
 
 
 def esphome_manifest(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -78,6 +85,7 @@ def package_model(
     output_dir: Path = Path("."),
     *,
     name_by_wake_word: bool = False,
+    artifact_slug: str = "",
     source_model: Path = DEFAULT_MODEL_PATH,
 ) -> tuple[Path, Path, Path]:
     if not source_model.exists():
@@ -85,7 +93,9 @@ def package_model(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     basename = (
-        safe_slug(wake_word) if name_by_wake_word else "stream_state_internal_quant"
+        safe_slug(artifact_slug or wake_word)
+        if name_by_wake_word
+        else "stream_state_internal_quant"
     )
     model_path = output_dir / f"{basename}.tflite"
     json_path = output_dir / f"{basename}.json"
@@ -195,6 +205,7 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("MWW_CALIBRATION_JSON", ""),
     )
     parser.add_argument("--output-dir", default=".")
+    parser.add_argument("--artifact-slug", default="")
     parser.add_argument("--name-by-wake-word", action="store_true")
     return parser.parse_args()
 
@@ -210,6 +221,7 @@ def main() -> None:
         calibration_path,
         Path(args.output_dir),
         name_by_wake_word=bool(args.name_by_wake_word),
+        artifact_slug=str(args.artifact_slug),
     )
 
 

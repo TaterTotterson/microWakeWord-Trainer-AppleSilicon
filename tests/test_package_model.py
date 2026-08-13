@@ -51,6 +51,30 @@ class PackageModelTests(unittest.TestCase):
             self.assertNotIn("tater_native", esphome_payload)
             self.assertNotIn("calibration", esphome_payload)
 
+    def test_non_ascii_wake_word_keeps_phrase_and_uses_unique_artifact_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_model = root / "source.tflite"
+            source_model.write_bytes(b"model")
+
+            model_path, json_path, esphome_path = package_model.package_model(
+                "こんにちは タター",
+                "ja",
+                root / "missing-calibration.json",
+                root / "output",
+                name_by_wake_word=True,
+                source_model=source_model,
+            )
+
+            expected_slug = package_model.safe_slug("こんにちは タター")
+            self.assertRegex(expected_slug, r"^wakeword_[0-9a-f]{8}$")
+            self.assertEqual(model_path.name, f"{expected_slug}.tflite")
+            self.assertEqual(json_path.name, f"{expected_slug}.json")
+            self.assertEqual(esphome_path.name, f"{expected_slug}.esphome.json")
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["wake_word"], "こんにちは タター")
+            self.assertEqual(payload["trained_languages"], ["ja"])
+
 
 if __name__ == "__main__":
     unittest.main()
