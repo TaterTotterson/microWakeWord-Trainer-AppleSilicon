@@ -590,7 +590,7 @@ compute_feature_cache_key() {
     printf 'personal_key=%s\n' "$personal_key"
     printf 'reviewed_negative_key=%s\n' "$reviewed_negative_key"
     stat -f 'feature_script=%N:%m:%z' "$SOURCE_DIR/scripts_macos/make_features.py"
-    for dataset_dir in mit_rirs audioset_16k fma_16k wham_16k chime_16k; do
+    for dataset_dir in mit_rirs audioset_16k fma_16k chime_16k; do
       printf '%s=%s\n' "$dataset_dir" "$(count_matching_files "$dataset_dir" '*.wav')"
     done
   } | shasum -a 256 | awk '{print $1}'
@@ -667,7 +667,7 @@ else
 fi
 
 # ── (C) pull/prepare augmentation datasets (RIR, Audioset, FMA) ──────────────
-echo "📚 Preparing augmentation datasets (MIT RIR, AudioSet, FMA, WHAM, CHiME)…"
+echo "📚 Preparing augmentation datasets (MIT RIR, AudioSet, FMA, CHiME)…"
 "$PY" "$SOURCE_DIR/scripts_macos/prepare_datasets.py"
 
 # ── (D) trim silence from personal samples, if any exists

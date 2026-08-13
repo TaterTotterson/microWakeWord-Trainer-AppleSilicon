@@ -24,7 +24,6 @@ def validate(paths):
 
 impulse_paths = ["mit_rirs"]
 background_paths = [
-    "wham_16k",
     "chime_16k",
     "fma_16k",
     "audioset_16k",

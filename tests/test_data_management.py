@@ -80,6 +80,30 @@ class DataManagementTests(unittest.TestCase):
             trainer._delete_managed_data_item("generated_samples")
         self.assertTrue((generated / "keep.wav").exists())
 
+    def test_legacy_wham_data_is_ignored_and_can_be_deleted(self):
+        source = trainer.DATA_DIR / "wham"
+        prepared = trainer.DATA_DIR / "wham_16k"
+        log = trainer.DATA_DIR / "wham_corrupted_files.log"
+        source.mkdir()
+        prepared.mkdir()
+        (source / "wham_noise.zip").write_bytes(b"archive")
+        (prepared / "old.wav").write_bytes(b"legacy")
+        log.write_text("old failure")
+
+        payload = trainer._managed_data_payload()
+        items = {row["id"]: row for row in payload["items"]}
+
+        self.assertEqual(items["wham_source"]["category"], "Legacy and unused data")
+        self.assertEqual(items["wham_16k"]["category"], "Legacy and unused data")
+        self.assertIn("ignored during augmentation", items["wham_16k"]["description"])
+        self.assertIn("do not download or use WHAM", items["wham_16k"]["rebuild_note"])
+
+        trainer._delete_managed_data_item("wham_source")
+        trainer._delete_managed_data_item("wham_16k")
+        self.assertFalse(source.exists())
+        self.assertFalse(prepared.exists())
+        self.assertFalse(log.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

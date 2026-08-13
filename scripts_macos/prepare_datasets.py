@@ -417,50 +417,6 @@ else:
     print(f"✅ FMA complete ({ok} ok, {len(fma_bad)} failed)")
 
 # ============================================================
-# WHAM_noise (resample to 16 kHz mono, skip bad files)
-# ============================================================
-print("\n=== WHAM noise ===")
-wham_zip_dir = Path("wham"); wham_zip_dir.mkdir(exist_ok=True)
-wham_out = Path("wham_16k"); wham_out.mkdir(exist_ok=True)
-
-if any(wham_out.rglob("*.wav")):
-    print("✅ wham_16k exists; skipping.")
-else:
-    zipname = "wham_noise.zip"
-    zipurl = "https://my-bucket-a8b4b49c25c811ee9a7e8bba05fa24c7.s3.amazonaws.com/wham_noise.zip"
-    zipout = wham_zip_dir / zipname
-
-    if not zipout.exists():
-        print(f"⬇️ {zipname}")
-        print("   Progress updates are shown about every 32 MiB.")
-        rc = sh(f"wget --progress=dot:giga -O '{zipout}' '{zipurl}'")
-        if rc != 0:
-            raise RuntimeError("wget failed for WHAM noise zip")
-    extracted_wham_dir = wham_zip_dir / "wham_noise"
-    if not extracted_wham_dir.exists() or not any(extracted_wham_dir.rglob("*.wav")):
-        extract_zip_with_python(zipout, wham_zip_dir, "WHAM noise zip")
-
-    # Find all wav files in the wham directory
-    print("🔎 Scanning extracted WHAM WAV files (please wait)…")
-    wavs = list(wham_zip_dir.rglob("*.wav"))
-    print(f"WHAM WAV count: {len(wavs)}")
-
-    corrupt = []
-    for p in tqdm(wavs, desc="WHAM→16k WAV"):
-        try:
-            y, _ = librosa.load(p, sr=16000, mono=True)
-            if y.size == 0:
-                raise ValueError("empty audio")
-            write_wav(wham_out / (p.stem + ".wav"), y, 16000)
-        except Exception as e:
-            corrupt.append(f"{p}:{e}")
-
-    print("⏳ Finalizing WHAM output (writing logs and checking results)…")
-    if corrupt:
-        Path("wham_corrupted_files.log").write_text("\n".join(corrupt))
-    print(f"✅ WHAM complete (handled {len(corrupt)} corrupt files)")
-
-# ============================================================
 # CHiME-Home (resample to 16 kHz mono, skip bad files)
 # ============================================================
 print("\n=== CHiME-Home ===")
