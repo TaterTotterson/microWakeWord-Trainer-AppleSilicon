@@ -1,3 +1,4 @@
+- Prevented otherwise successful TTS generation from failing just short of the requested sample count. The trainer now performs bounded final recovery with available direct providers while preserving all speech and audio safety gates.
 - Removed the unreliable WHAM! augmentation dataset. Existing WHAM! data is ignored by training and can be safely deleted from the Data tab.
 - Fixed Japanese and other non-ASCII wake phrases so TTS and model training use the phrase entered by the user instead of silently substituting `wakeword`.
 - Added deterministic Unicode-safe artifact names, keeping readable model metadata while preventing non-ASCII wake words from overwriting one another.
