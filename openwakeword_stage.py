@@ -19,7 +19,7 @@ from typing import Any, Mapping
 
 
 OWW_TRAINER_REPOSITORY = "https://github.com/TaterTotterson/openWakeWord-Trainer.git"
-OWW_TRAINER_REVISION = "9fd33322efe073fd7a69ff5bff8629726d8fa2b0"
+OWW_TRAINER_REVISION = "5dceecd783a381ea59c06a4574266d3fcd54d49e"
 OWW_BUNDLE_SUFFIX = ".wake-bundle.json"
 OWW_METADATA_SUFFIX = ".oww.json"
 
@@ -136,7 +136,13 @@ def prepare_openwakeword_stage(
         # pinned trainer's device patch.
         env.pop("OWW_TORCH_CUDA", None)
         env.pop("OWW_TORCH_VERSION", None)
-        env.setdefault("OWW_ENABLE_MPS", "1")
+        env.setdefault("OWW_DEFAULT_NEGATIVE_BATCH", "256")
+        env.setdefault("OWW_DEFAULT_VALIDATION_BATCH", "2048")
+        if normalize_train_openwakeword(env.get("OWW_FORCE_CPU"), default=False):
+            env["OWW_ENABLE_MPS"] = "0"
+            env.setdefault("OWW_PIPER_DEVICE", "cpu")
+        else:
+            env.setdefault("OWW_ENABLE_MPS", "1")
     elif sys.platform.startswith("linux") and not env.get("OWW_FORCE_CPU"):
         env.setdefault("OWW_TORCH_CUDA", "cu124")
 
@@ -157,6 +163,8 @@ def prepare_openwakeword_stage(
         "--data-dir",
         str(oww_root / "assets"),
     ]
+    if normalize_train_openwakeword(env.get("OWW_FORCE_CPU"), default=False):
+        cmd.append("--force-cpu")
     if any(Path(personal_dir).glob("*.wav")) and any(Path(negative_dir).glob("*.wav")):
         cmd.append("--train-verifier")
     Path(trained_dir).mkdir(parents=True, exist_ok=True)

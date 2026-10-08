@@ -98,6 +98,40 @@ class OpenWakeWordStageTests(unittest.TestCase):
             self.assertNotIn("OWW_TORCH_CUDA", env)
             self.assertNotIn("OWW_TORCH_VERSION", env)
             self.assertEqual(env["OWW_ENABLE_MPS"], "1")
+            self.assertEqual(env["OWW_DEFAULT_NEGATIVE_BATCH"], "256")
+            self.assertEqual(env["OWW_DEFAULT_VALIDATION_BATCH"], "2048")
+
+    def test_prepare_can_force_cpu_with_memory_safe_batches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trainer_root = root / "oww-trainer"
+            (trainer_root / "scripts").mkdir(parents=True)
+            (trainer_root / "train_openwakeword.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (trainer_root / "scripts" / "train_openwakeword.py").write_text("", encoding="utf-8")
+            personal = root / "personal"
+            negative = root / "negative"
+            personal.mkdir()
+            negative.mkdir()
+
+            with patch("openwakeword_stage.sys.platform", "darwin"):
+                cmd, _cwd, env, _staging = prepare_openwakeword_stage(
+                    phrase="hey tater",
+                    safe_word="hey_tater",
+                    data_dir=root / "data",
+                    personal_dir=personal,
+                    negative_dir=negative,
+                    trained_dir=root / "trained",
+                    environ={
+                        "TATER_OWW_TRAINER_DIR": str(trainer_root),
+                        "OWW_FORCE_CPU": "1",
+                    },
+                )
+
+            self.assertIn("--force-cpu", cmd)
+            self.assertEqual(env["OWW_ENABLE_MPS"], "0")
+            self.assertEqual(env["OWW_PIPER_DEVICE"], "cpu")
+            self.assertEqual(env["OWW_DEFAULT_NEGATIVE_BATCH"], "256")
+            self.assertEqual(env["OWW_DEFAULT_VALIDATION_BATCH"], "2048")
 
     def test_publish_keeps_mww_urls_and_adds_dual_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
