@@ -1,3 +1,3 @@
-- Reduced Apple unified-memory pressure during openWakeWord training by lowering the negative training batch from 1,024 to 256.
-- Streamed false-positive validation data in bounded batches instead of allocating one multi-gigabyte MPS tensor.
-- Added a working `OWW_FORCE_CPU=1` escape hatch and pinned the tested openWakeWord Trainer v1.0.1 release.
+- Fixed personalized openWakeWord verifier training to load the generated ONNX model through ONNX Runtime instead of incorrectly requesting LiteRT.
+- Preserved the existing microWakeWord model when verifier training needs to be retried after updating.
+- Pinned the macOS app to the tested openWakeWord Trainer v1.0.2 release.
