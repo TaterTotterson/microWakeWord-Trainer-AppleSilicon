@@ -1,3 +1,3 @@
-- Updated the shared openWakeWord companion trainer with a more portable ONNX-only dependency setup.
-- Improved dual-model calibration so openWakeWord confirmation preserves genuine wake-word recall while standalone OWW remains conservative.
-- Kept Apple and NVIDIA trainers on the same pinned, tested openWakeWord training revision.
+- Reduced Apple unified-memory pressure during openWakeWord training by lowering the negative training batch from 1,024 to 256.
+- Streamed false-positive validation data in bounded batches instead of allocating one multi-gigabyte MPS tensor.
+- Added a working `OWW_FORCE_CPU=1` escape hatch and pinned the tested openWakeWord Trainer v1.0.1 release.
