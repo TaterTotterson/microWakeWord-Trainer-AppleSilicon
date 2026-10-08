@@ -1,7 +1,3 @@
-- Added optional dual-model training: each run now builds microWakeWord plus an openWakeWord companion by default, with an MWW-only switch when needed.
-- Added a versioned wake-word bundle manifest with stable MWW links, an OWW ONNX classifier, checksums, and calibrated OWW detector settings for Echo firmware.
-- Auto Training can now keep the openWakeWord companion synchronized on scheduled retraining runs.
-- Prevented otherwise successful TTS generation from failing just short of the requested sample count. The trainer now performs bounded final recovery with available direct providers while preserving all speech and audio safety gates.
-- Removed the unreliable WHAM! augmentation dataset. Existing WHAM! data is ignored by training and can be safely deleted from the Data tab.
-- Fixed Japanese and other non-ASCII wake phrases so TTS and model training use the phrase entered by the user instead of silently substituting `wakeword`.
-- Added deterministic Unicode-safe artifact names, keeping readable model metadata while preventing non-ASCII wake words from overwriting one another.
+- Updated the shared openWakeWord companion trainer with a more portable ONNX-only dependency setup.
+- Improved dual-model calibration so openWakeWord confirmation preserves genuine wake-word recall while standalone OWW remains conservative.
+- Kept Apple and NVIDIA trainers on the same pinned, tested openWakeWord training revision.
