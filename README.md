@@ -12,7 +12,7 @@
   </a>
 </p>
 
-Train custom microWakeWord models on Apple Silicon with a local web UI, multilingual samples from a modern OmniVoice/Qwen3/MOSS ensemble, device-captured samples, reviewed false-wake negatives, live training logs, and local wake-word links for Tater Native satellites.
+Train paired microWakeWord and openWakeWord models on Apple Silicon with a local web UI, multilingual MWW samples from a modern OmniVoice/Qwen3/MOSS ensemble, device-captured samples, reviewed false-wake negatives, live training logs, and local wake-word links for Tater Native satellites.
 
 Real samples come from device-captured wake audio, close misses, or manual uploads. Every saved sample is normalized to `16 kHz / mono / 16-bit PCM WAV` before training.
 
@@ -21,7 +21,7 @@ Real samples come from device-captured wake audio, close misses, or manual uploa
 ## What The UI Does
 
 - The entire interface is reactive Vue 3 + TypeScript, following the same typed component pattern as Tater's newer UI surfaces.
-- `Trainer` starts a wake-word session, shows positive/negative sample counts, and launches training.
+- `Trainer` starts a wake-word session, shows positive/negative sample counts, and launches an MWW + OWW build by default.
 - `Auto Training` transcribes wake triggers, files phrase-misses as reviewed negatives, retrains on a schedule, and requests a satellite model refresh through Tater.
 - `Captured Audio` reviews clips sent by Tater Native or ESPHome sats, including wake hits, close misses, and false wakes.
 - `Samples` plays, removes, clears, and manually imports personal or negative samples.
@@ -222,12 +222,14 @@ Starting a new session does not clear samples. Use the clear buttons in `Samples
 3. Choose the TTS source. `Four-provider ensemble` is recommended when Piper is available.
 4. Optionally preview the phrase with the Mac system voice. This preview is separate from the training engines.
 5. Review the positive and negative sample counts.
-6. Click `Start training`.
-7. Watch the popup training console.
+6. Leave `Build the openWakeWord companion model` enabled for a dual-model bundle, or turn it off for an MWW-only run.
+7. Click `Start training` and watch the popup training console.
 
 Personal samples are optional. Training can run with zero personal samples after confirmation, using generated TTS samples and the stock negative datasets.
 
 Reviewed negative samples are included as a separate hard-negative feature set when present, so false wakes from your real devices can make the next model more selective.
+
+The first dual-model run downloads a pinned revision of Tater's openWakeWord trainer and creates a separate OWW environment. Those assets are cached for later runs. OWW training runs only after MWW succeeds, publishes through a staging directory, and cannot overwrite the existing MWW JSON/TFLite pair. Calibration automatically packages a stricter OWW-only threshold and a separate recall-preserving threshold for MWW + OWW confirmation; users do not enter these values manually. The upstream OWW custom-training path is strongest for English; for other languages, validate the companion model carefully or use the MWW-only checkbox.
 
 ---
 
@@ -298,14 +300,18 @@ Use the main Tater app for satellite firmware updates and USB flashing.
 
 ## Output Files
 
-Successful runs produce firmware-ready artifacts in:
+Successful dual-model runs produce firmware-ready artifacts in:
 
 ```text
 trained_wake_words/<wake_word>.tflite
 trained_wake_words/<wake_word>.json
+trained_wake_words/<wake_word>.oww.onnx         # Echo openWakeWord classifier
+trained_wake_words/<wake_word>.oww.json
+trained_wake_words/<wake_word>.oww.verifier.pkl # when positive + negative clips exist
+trained_wake_words/<wake_word>.wake-bundle.json
 ```
 
-The `Wake Words` tab uses this folder to populate the local wake-word links.
+The original `<wake_word>.json` and `<wake_word>.tflite` names are unchanged for existing Tater and ESPHome clients. The additive bundle manifest links the MWW TFLite and OWW ONNX models, their SHA-256 hashes, and the calibrated OWW threshold/patience. The `Wake Words` tab exposes the MWW, OWW, and bundle links.
 
 Wake-word links now advertise a LAN-reachable address instead of copying the browser's `127.0.0.1` host. The trainer uses this order:
 

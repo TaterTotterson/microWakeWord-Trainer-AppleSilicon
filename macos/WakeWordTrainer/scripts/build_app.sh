@@ -53,6 +53,8 @@ rsync -a --delete \
   --exclude='trained_wake_words/' \
   --exclude='trained_models/' \
   --exclude='output/' \
+  --exclude='openwakeword/' \
+  --exclude='tools/openwakeword-trainer/' \
   --exclude='generated_samples/' \
   --exclude='generated_augmented_features/' \
   --exclude='personal_augmented_features/' \

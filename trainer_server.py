@@ -55,6 +55,14 @@ from tts_config import (
     parse_omnivoice_catalog,
     quality_for_engines,
 )
+from openwakeword_stage import (
+    OWW_BUNDLE_SUFFIX,
+    OWW_METADATA_SUFFIX,
+    bundle_catalog_fields,
+    normalize_train_openwakeword,
+    prepare_openwakeword_stage,
+    publish_openwakeword_artifacts,
+)
 
 SUPPORT_DIR = Path(
     os.environ.get(
@@ -205,6 +213,7 @@ AUTO_TRAIN_DEFAULT_CONFIG: Dict[str, Any] = {
     "tater_linked_at": "",
     "tater_link_tater_name": "",
     "notify_satellites": True,
+    "train_openwakeword": True,
 }
 
 AUTO_TRAIN_DEFAULT_STATE: Dict[str, Any] = {
@@ -353,7 +362,8 @@ def _managed_data_registry() -> List[Dict[str, Any]]:
         {"id": "voice_bank", "label": "Legacy voice-bank references", "category": "Voice and speech models", "description": "Reference clips left by older voice-bank generation runs.", "paths": [DATA_DIR / "voice-bank"], "rebuild_note": rebuild},
 
         {"id": "training_workspace", "label": "Model training workspace", "category": "Training results", "description": "Checkpoints, logs, and intermediate files from the latest model run.", "paths": [DATA_DIR / "trained_models"], "rebuild_note": rebuild},
-        {"id": "published_models", "label": "Published wake-word models", "category": "Training results", "description": "Finished TFLite models and JSON packages shown in Wake Words.", "paths": [TRAINED_WAKE_WORDS_DIR], "rebuild_note": "Tater links to these files will stop working. Train again to recreate them."},
+        {"id": "openwakeword_workspace", "label": "openWakeWord training cache", "category": "Training results", "description": "Pinned trainer source, generated clips, dependencies, and intermediate files for the companion model.", "paths": [DATA_DIR / "openwakeword", DATA_DIR / "tools" / "openwakeword-trainer"], "rebuild_note": redownload},
+        {"id": "published_models", "label": "Published wake-word models", "category": "Training results", "description": "Finished MWW/OWW models and manifests shown in Wake Words.", "paths": [TRAINED_WAKE_WORDS_DIR], "rebuild_note": "Tater links to these files will stop working. Train again to recreate them."},
         {"id": "training_log", "label": "Training console log", "category": "Training results", "description": "Saved console output from the most recent training run.", "paths": [DATA_DIR / "recorder_training.log"], "rebuild_note": "The deleted history cannot be restored; the next run creates a new log."},
 
         {"id": "archived_voice_banks", "label": "Archived legacy voice banks", "category": "Legacy and quarantined data", "description": "Older reference banks retained outside the active training workspace.", "paths": [SUPPORT_DIR / "voice-bank-archive"], "rebuild_note": "These archived references cannot be restored automatically."},
@@ -618,7 +628,9 @@ def _list_trained_wake_words(base_url: str = "") -> List[Dict[str, Any]]:
     seen: set[str] = set()
 
     for json_path in sorted(TRAINED_WAKE_WORDS_DIR.glob("*.json")):
-        if json_path.name.endswith(ESPHOME_MANIFEST_SUFFIX):
+        if json_path.name.endswith(
+            (ESPHOME_MANIFEST_SUFFIX, OWW_METADATA_SUFFIX, OWW_BUNDLE_SUFFIX)
+        ):
             continue
         try:
             meta = json.loads(json_path.read_text(encoding="utf-8"))
@@ -658,8 +670,7 @@ def _list_trained_wake_words(base_url: str = "") -> List[Dict[str, Any]]:
             esphome_json_url = f"{base}{esphome_json_url}"
             model_url = f"{base}{model_url}"
 
-        rows.append(
-            {
+        row = {
                 "key": safe,
                 "label": wake_word or safe,
                 "wake_word_name": safe,
@@ -684,7 +695,8 @@ def _list_trained_wake_words(base_url: str = "") -> List[Dict[str, Any]]:
                 ),
                 "calibration_generated_at": str(calibration.get("generated_at") or "").strip(),
             }
-        )
+        row.update(bundle_catalog_fields(TRAINED_WAKE_WORDS_DIR, safe, base))
+        rows.append(row)
     return rows
 
 
@@ -830,6 +842,9 @@ def _normalize_auto_train_config(values: Dict[str, Any] | None, *, base: Dict[st
         "tater_linked_at": str(source.get("tater_linked_at") or "").strip(),
         "tater_link_tater_name": str(source.get("tater_link_tater_name") or "").strip(),
         "notify_satellites": _config_bool(source.get("notify_satellites"), True),
+        "train_openwakeword": normalize_train_openwakeword(
+            source.get("train_openwakeword"), True
+        ),
     }
 
 
@@ -1886,6 +1901,7 @@ def _start_training_thread(
     training_lock,
     tts_mode: str = DEFAULT_SERVER_TTS_MODE,
     english_accent: str = DEFAULT_SERVER_ENGLISH_ACCENT,
+    train_openwakeword: bool = True,
 ) -> threading.Thread:
     global TRAINING_THREAD
     if TRAINING_SHUTDOWN_EVENT.is_set():
@@ -1893,9 +1909,93 @@ def _start_training_thread(
 
     thread = threading.Thread(
         target=_run_training_background,
-        args=(safe_word, language, auto_run, training_lock, tts_mode, english_accent),
+        args=(
+            safe_word,
+            language,
+            auto_run,
+            training_lock,
+            tts_mode,
+            english_accent,
+            train_openwakeword,
+        ),
         daemon=True,
         name="wake-word-training",
+    )
+    with TRAINING_RUNTIME_LOCK:
+        if TRAINING_SHUTDOWN_EVENT.is_set():
+            raise RuntimeError("WakeWord Trainer is shutting down.")
+        if TRAINING_THREAD is not None and TRAINING_THREAD.is_alive():
+            raise RuntimeError("Training is already running.")
+        TRAINING_STOP_EVENT.clear()
+        TRAINING_THREAD = thread
+    try:
+        thread.start()
+    except Exception:
+        with TRAINING_RUNTIME_LOCK:
+            if TRAINING_THREAD is thread:
+                TRAINING_THREAD = None
+        raise
+    return thread
+
+
+def _run_openwakeword_only_background(
+    safe_word: str,
+    phrase: str,
+    training_lock,
+) -> None:
+    """Retry only the companion model while preserving published MWW files."""
+    global TRAINING_THREAD
+    rc = 999
+    log_path = DATA_DIR / "recorder_training.log"
+    with STATE_LOCK:
+        STATE["training"]["running"] = True
+        STATE["training"]["exit_code"] = None
+        STATE["training"]["log_lines"] = []
+        STATE["training"]["safe_word"] = safe_word
+        STATE["training"]["log_path"] = str(log_path)
+    _append_train_log(
+        "→ Retrying openWakeWord only; the completed microWakeWord model will not be rebuilt or replaced"
+    )
+
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        rc = _run_openwakeword_training(
+            phrase=phrase,
+            safe_word=safe_word,
+            log_path=log_path,
+        )
+        _append_train_log(f"✓ openWakeWord-only retry finished (exit_code={rc})")
+        with STATE_LOCK:
+            STATE["training"]["exit_code"] = rc
+    except Exception as exc:
+        _append_train_log(f"✗ openWakeWord-only retry crashed: {exc!r}")
+        with STATE_LOCK:
+            STATE["training"]["exit_code"] = 999
+    finally:
+        with TRAINING_RUNTIME_LOCK:
+            if TRAINING_THREAD is threading.current_thread():
+                TRAINING_THREAD = None
+        with STATE_LOCK:
+            STATE["training"]["running"] = False
+        _release_training_run_lock(training_lock)
+        if not TRAINING_SHUTDOWN_EVENT.is_set():
+            TRAINING_STOP_EVENT.clear()
+
+
+def _start_openwakeword_only_thread(
+    safe_word: str,
+    phrase: str,
+    training_lock,
+) -> threading.Thread:
+    global TRAINING_THREAD
+    if TRAINING_SHUTDOWN_EVENT.is_set():
+        raise RuntimeError("WakeWord Trainer is shutting down.")
+
+    thread = threading.Thread(
+        target=_run_openwakeword_only_background,
+        args=(safe_word, phrase, training_lock),
+        daemon=True,
+        name="openwakeword-only-training",
     )
     with TRAINING_RUNTIME_LOCK:
         if TRAINING_SHUTDOWN_EVENT.is_set():
@@ -1995,6 +2095,9 @@ def _start_auto_training() -> Dict[str, Any]:
             training_lock,
             tts_mode=tts_mode,
             english_accent=english_accent,
+            train_openwakeword=normalize_train_openwakeword(
+                config.get("train_openwakeword"), True
+            ),
         )
     except Exception as exc:
         with STATE_LOCK:
@@ -3079,6 +3182,72 @@ def _append_train_log(line: str):
             del buf[: len(buf) - 250]
 
 
+def _run_openwakeword_training(
+    *,
+    phrase: str,
+    safe_word: str,
+    log_path: Path,
+) -> int:
+    """Run and atomically publish the optional second wake-word model."""
+    global TRAINING_PROCESS
+
+    cmd, cwd, env, staging_dir = prepare_openwakeword_stage(
+        phrase=phrase,
+        safe_word=safe_word,
+        data_dir=DATA_DIR,
+        personal_dir=PERSONAL_DIR,
+        negative_dir=NEGATIVE_DIR,
+        trained_dir=TRAINED_WAKE_WORDS_DIR,
+        log=_append_train_log,
+    )
+    _append_train_log("")
+    _append_train_log("===== openWakeWord second-stage model =====")
+    _append_train_log(f"→ Running: {' '.join(cmd)}")
+    proc: subprocess.Popen | None = None
+    try:
+        with log_path.open("a", encoding="utf-8") as log_file:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+                start_new_session=(os.name == "posix"),
+            )
+            with TRAINING_RUNTIME_LOCK:
+                TRAINING_PROCESS = proc
+            if TRAINING_SHUTDOWN_EVENT.is_set() or TRAINING_STOP_EVENT.is_set():
+                _terminate_training_process_tree(proc)
+            assert proc.stdout is not None
+            try:
+                for line in proc.stdout:
+                    log_file.write(line)
+                    log_file.flush()
+                    _append_train_log(line)
+            finally:
+                with contextlib.suppress(Exception):
+                    proc.stdout.close()
+            rc = proc.wait()
+    finally:
+        with TRAINING_RUNTIME_LOCK:
+            if TRAINING_PROCESS is proc:
+                TRAINING_PROCESS = None
+
+    if rc != 0:
+        _append_train_log(f"✗ openWakeWord training failed (exit_code={rc}); microWakeWord was preserved")
+        return rc
+    bundle_path = publish_openwakeword_artifacts(
+        staging_dir=staging_dir,
+        trained_dir=TRAINED_WAKE_WORDS_DIR,
+        safe_word=safe_word,
+        phrase=phrase,
+    )
+    _append_train_log(f"✓ Dual-model wake-word bundle published: {bundle_path.name}")
+    return 0
+
+
 def _run_training_background(
     safe_word: str,
     language: str,
@@ -3086,6 +3255,7 @@ def _run_training_background(
     training_lock=None,
     tts_mode: str = DEFAULT_SERVER_TTS_MODE,
     english_accent: str = DEFAULT_SERVER_ENGLISH_ACCENT,
+    train_openwakeword: bool = True,
 ):
     global TRAINING_PROCESS, TRAINING_THREAD
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
@@ -3162,6 +3332,20 @@ def _run_training_background(
                     proc.stdout.close()
 
             rc = proc.wait()
+
+        if (
+            rc == 0
+            and train_openwakeword
+            and not TRAINING_SHUTDOWN_EVENT.is_set()
+            and not TRAINING_STOP_EVENT.is_set()
+        ):
+            rc = _run_openwakeword_training(
+                phrase=training_phrase,
+                safe_word=safe_word,
+                log_path=Path(log_path),
+            )
+        elif rc == 0:
+            _append_train_log("→ openWakeWord stage disabled; published microWakeWord only")
 
         if (TRAINING_SHUTDOWN_EVENT.is_set() or TRAINING_STOP_EVENT.is_set()) and rc != 0:
             reason = "Trainer shutdown" if TRAINING_SHUTDOWN_EVENT.is_set() else "session stop"
@@ -3957,7 +4141,13 @@ def trained_wake_words_catalog(request: Request):
 @app.get("/api/trained_wake_words/{filename}")
 def trained_wake_word_artifact(filename: str):
     safe_filename = Path(filename or "").name
-    if not safe_filename or Path(safe_filename).suffix.lower() not in {".json", ".tflite"}:
+    if not safe_filename or Path(safe_filename).suffix.lower() not in {
+        ".json",
+        ".tflite",
+        ".onnx",
+        ".data",
+        ".pkl",
+    }:
         return JSONResponse({"ok": False, "error": "Unsupported wake word artifact."}, status_code=400)
     _sync_trained_wake_word_artifacts()
     if safe_filename.endswith(ESPHOME_MANIFEST_SUFFIX):
@@ -3989,6 +4179,9 @@ def trained_wake_word_artifact(filename: str):
 def train_now(payload: Dict[str, Any] = None):
     payload = payload or {}
     allow_no_personal = bool(payload.get("allow_no_personal", False))
+    train_openwakeword = normalize_train_openwakeword(
+        payload.get("train_openwakeword"), True
+    )
     if TRAINING_SHUTDOWN_EVENT.is_set():
         return JSONResponse(
             {"ok": False, "error": "WakeWord Trainer is shutting down."},
@@ -4059,6 +4252,7 @@ def train_now(payload: Dict[str, Any] = None):
             training_lock,
             tts_mode=tts_mode,
             english_accent=english_accent,
+            train_openwakeword=train_openwakeword,
         )
     except Exception as exc:
         with STATE_LOCK:
@@ -4074,6 +4268,7 @@ def train_now(payload: Dict[str, Any] = None):
         "tts_mode": tts_mode,
         "personal_samples_used": takes_received > 0,
         "allow_no_personal": allow_no_personal,
+        "train_openwakeword": train_openwakeword,
     }
 
 
@@ -4081,6 +4276,85 @@ def train_now(payload: Dict[str, Any] = None):
 def train_status():
     with STATE_LOCK:
         return {"ok": True, "training": dict(STATE["training"])}
+
+
+@app.post("/api/train_openwakeword")
+def train_openwakeword_only(payload: Dict[str, Any] = None):
+    """Build or retry OWW from the existing samples and published MWW model."""
+    payload = payload or {}
+    if TRAINING_SHUTDOWN_EVENT.is_set():
+        return JSONResponse(
+            {"ok": False, "error": "WakeWord Trainer is shutting down."},
+            status_code=503,
+        )
+
+    with STATE_LOCK:
+        active_safe_word = str(STATE.get("safe_word") or "").strip()
+        raw_phrase = str(STATE.get("raw_phrase") or "").strip()
+        training_running = bool(STATE["training"]["running"])
+    safe_word = safe_name(str(payload.get("safe_word") or active_safe_word))
+    if training_running:
+        return JSONResponse({"ok": False, "error": "Training already running"}, status_code=400)
+
+    manifest_path = TRAINED_WAKE_WORDS_DIR / f"{safe_word}.json"
+    if not manifest_path.is_file():
+        return JSONResponse(
+            {"ok": False, "error": f"Completed microWakeWord package not found for {safe_word}."},
+            status_code=404,
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("manifest is not an object")
+        model_name = Path(str(manifest.get("model") or f"{safe_word}.tflite")).name
+        if not (TRAINED_WAKE_WORDS_DIR / model_name).is_file():
+            raise FileNotFoundError(model_name)
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"The existing microWakeWord package is incomplete: {exc}"},
+            status_code=422,
+        )
+    phrase = str(manifest.get("wake_word") or raw_phrase or safe_word.replace("_", " ")).strip()
+
+    with DATA_MANAGEMENT_LOCK:
+        with STATE_LOCK:
+            if STATE["training"]["running"]:
+                return JSONResponse({"ok": False, "error": "Training already running"}, status_code=400)
+            try:
+                training_lock = _try_acquire_training_run_lock()
+            except Exception as exc:
+                return JSONResponse(
+                    {"ok": False, "error": f"Could not acquire the training lock: {exc}"},
+                    status_code=500,
+                )
+            if training_lock is None:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "Training is already running in another trainer process.",
+                        "code": "TRAINING_LOCKED",
+                    },
+                    status_code=409,
+                )
+            STATE["training"]["running"] = True
+    try:
+        _start_openwakeword_only_thread(safe_word, phrase, training_lock)
+    except Exception as exc:
+        with STATE_LOCK:
+            STATE["training"]["running"] = False
+        _release_training_run_lock(training_lock)
+        return JSONResponse(
+            {"ok": False, "error": f"Could not start openWakeWord training: {exc}"},
+            status_code=500,
+        )
+
+    return {
+        "ok": True,
+        "started": True,
+        "openwakeword_only": True,
+        "safe_word": safe_word,
+        "phrase": phrase,
+    }
 
 
 @app.post("/api/reset_recordings")

@@ -429,6 +429,8 @@ private final class BackendManager {
             "trained_wake_words/",
             "trained_models/",
             "output/",
+            "openwakeword/",
+            "tools/openwakeword-trainer/",
             "generated_samples/",
             "generated_augmented_features/",
             "personal_augmented_features/",
