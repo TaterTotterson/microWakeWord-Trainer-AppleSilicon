@@ -1,468 +1,394 @@
 #!/usr/bin/env bash
-# watcher.sh  (mw_issue_watcher_macos.sh)
+# Poll Tater-Wake-Words for wake-word requests and train them locally.
 #
-# Minimal GitHub issue watcher for microWakeWord-Trainer-AppleSilicon (macOS).
-#
-# What it does:
-# - Polls GitHub Search API for open issues with titles like:  mww: hey dude
-# - Labels them as "mww-processing"
-# - Runs: ./train_microwakeword_macos.sh "hey_dude"
-# - Uploads hey_dude.tflite + hey_dude.json to your model repo/path
-# - Comments "added!", labels "mww-added", and closes the issue
-#
-# Requirements:
-# - MW_GITHUB_TOKEN in env (PAT; needs issues + contents on the target repo)
-#
-# Optional env:
-# - MW_ISSUE_REPO (default: TaterTotterson/microWakeWords)
-# - MW_MODEL_REPO (default: MW_ISSUE_REPO)
-# - MW_MODEL_BRANCH (default: main)
-# - MW_MODEL_BASE_PATH (default: microWakeWordsV3)
-# - MW_POLL_SECONDS (default: 60)
-# - MW_LABEL_PROCESSING (default: mww-processing)
-# - MW_LABEL_DONE (default: mww-added)
-# - MW_DONE_COMMENT (default: added!)
-# - MW_DRY_RUN=1   (do not train/upload/close; just log)
-# - MW_DEBUG=1     (extra logging)
+# This process is intentionally independent of GitHub Actions. A temporary
+# network outage only pauses polling or publishing; it does not cancel a local
+# training process. Requests carrying mww-processing are eligible so an issue
+# interrupted by a watcher or Mac restart is reclaimed on the next poll.
 
-set -euo pipefail
+set -u
+set -o pipefail
 
-# -------------------- Bash sanity --------------------
-# macOS /bin/bash is 3.2; we require bash 4+ (for mapfile, etc).
-if [[ -z "${BASH_VERSINFO:-}" ]]; then
-  echo "❌ This script must be run with bash, not sh/zsh."
-  echo "   Try: /opt/homebrew/bin/bash ./watcher.sh"
-  exit 1
-fi
-if (( BASH_VERSINFO[0] < 4 )); then
-  echo "❌ Bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} detected (too old)."
-  echo "   Install modern bash and run with it:"
-  echo "     brew install bash"
-  echo "     /opt/homebrew/bin/bash ./watcher.sh"
-  exit 1
-fi
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PATH="${PATH:-}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# -------------------- Optional .env auto-load --------------------
-# Note: this is safe for simple KEY=VALUE lines. If you have spaces, quote them.
-if [[ -f ".env" ]]; then
+if [[ -f "$ROOT_DIR/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
-  source ".env"
+  source "$ROOT_DIR/.env"
   set +a
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# -------------------- Config --------------------
-: "${MW_GITHUB_TOKEN:?MW_GITHUB_TOKEN is required}"
-
-MW_ISSUE_REPO="${MW_ISSUE_REPO:-TaterTotterson/microWakeWords}"
-MW_MODEL_REPO="${MW_MODEL_REPO:-$MW_ISSUE_REPO}"
-MW_MODEL_BRANCH="${MW_MODEL_BRANCH:-main}"
-MW_MODEL_BASE_PATH="${MW_MODEL_BASE_PATH:-microWakeWordsV3}"
-MW_LOCAL_ARTIFACT_DIR="${MW_LOCAL_ARTIFACT_DIR:-trained_wake_words}"
-
+MW_ISSUE_REPO="${MW_ISSUE_REPO:-TaterTotterson/Tater-Wake-Words}"
+MW_CATALOG_REPO="${MW_CATALOG_REPO:-$MW_ISSUE_REPO}"
+MW_CATALOG_BRANCH="${MW_CATALOG_BRANCH:-main}"
+MW_CATALOG_DIR="${MW_CATALOG_DIR:-microWakeWordsV7}"
 MW_POLL_SECONDS="${MW_POLL_SECONDS:-60}"
-
 MW_LABEL_PROCESSING="${MW_LABEL_PROCESSING:-mww-processing}"
 MW_LABEL_DONE="${MW_LABEL_DONE:-mww-added}"
-MW_DONE_COMMENT="${MW_DONE_COMMENT:-added!}"
-
+MW_LABEL_FAILED="${MW_LABEL_FAILED:-mww-failed}"
+MW_RETRY_FAILED="${MW_RETRY_FAILED:-0}"
 MW_DRY_RUN="${MW_DRY_RUN:-0}"
+MW_ONCE="${MW_ONCE:-0}"
 MW_DEBUG="${MW_DEBUG:-0}"
 
-TRAIN_SCRIPT="${TRAIN_SCRIPT:-$ROOT_DIR/train_microwakeword_macos.sh}"
-if [[ ! -x "$TRAIN_SCRIPT" ]]; then
-  echo "❌ Training script not found or not executable: $TRAIN_SCRIPT"
-  exit 1
+MW_EXTERNAL_ROOT="${TATER_WAKE_EXTERNAL_ROOT:-$(dirname "$ROOT_DIR")}"
+MW_TMP_ROOT="${TATER_WAKE_TMP_ROOT:-${MW_EXTERNAL_ROOT}/tater-wake-tmp}"
+MW_STATE_DIR="${MW_WATCHER_STATE_DIR:-${MW_TMP_ROOT}/watcher}"
+MW_CATALOG_REPO_DIR="${MW_CATALOG_REPO_DIR:-${MW_TMP_ROOT}/repos/Tater-Wake-Words}"
+MW_TRAINER_DATA_DIR="${TATER_WAKE_DATA_DIR:-$ROOT_DIR}"
+MW_TRAINER_SUPPORT_DIR="${TATER_WAKE_SUPPORT_DIR:-$ROOT_DIR}"
+
+if [[ -n "${MW_GITHUB_TOKEN:-}" ]]; then
+  export GH_TOKEN="$MW_GITHUB_TOKEN"
+fi
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  export GITHUB_TOKEN="${GITHUB_TOKEN:-$GH_TOKEN}"
 fi
 
-# Use python3 from PATH (does NOT need to be the venv used by training script)
-PY_BIN="${PY_BIN:-python3}"
-command -v "$PY_BIN" >/dev/null 2>&1 || { echo "❌ python not found: $PY_BIN"; exit 1; }
-
-# -------------------- Helpers --------------------
-log() { printf "%s [mw_watcher] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
-
-safe_name() {
-  local s="${1:-}"
-  s="$(echo "$s" | tr '[:upper:]' '[:lower:]')"
-  s="$(echo "$s" | sed -E 's/[[:space:]]+/_/g')"
-  s="$(echo "$s" | sed -E 's/[^a-z0-9_]+//g')"
-  s="$(echo "$s" | sed -E 's/^_+|_+$//g')"
-  if [[ -z "$s" ]]; then
-    s="wakeword_$(printf '%s' "${1:-}" | shasum -a 256 | cut -c1-8)"
-  fi
-  echo "$s"
+log() {
+  printf "%s [mw_watcher] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
-# Curl wrapper:
-# - writes body to a file
-# - writes headers to a file
-# - prints http_code to stdout
-curl_to_files() {
-  local method="$1"; shift
-  local url="$1"; shift
-  local body_file="$1"; shift
-  local headers_file="$1"; shift
-  local data="${1:-}"
+debug() {
+  [[ "$MW_DEBUG" == "1" ]] && log "DEBUG: $*"
+  return 0
+}
 
-  # Always send auth + accept
-  if [[ -n "$data" ]]; then
-    curl -sS -X "$method" \
-      -H "Authorization: Bearer $MW_GITHUB_TOKEN" \
-      -H "Accept: application/vnd.github+json" \
-      -H "Content-Type: application/json" \
-      -H "User-Agent: mw-issue-watcher" \
-      -D "$headers_file" \
-      -o "$body_file" \
-      -w "%{http_code}" \
-      --data "$data" \
-      "$url"
-  else
-    curl -sS -X "$method" \
-      -H "Authorization: Bearer $MW_GITHUB_TOKEN" \
-      -H "Accept: application/vnd.github+json" \
-      -H "User-Agent: mw-issue-watcher" \
-      -D "$headers_file" \
-      -o "$body_file" \
-      -w "%{http_code}" \
-      "$url"
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    log "ERROR: Required command is missing: $1"
+    exit 1
+  }
+}
+
+for command_name in gh git python3; do
+  require_command "$command_name"
+done
+
+# Configure Git to obtain HTTPS credentials from the same gh login or GH_TOKEN
+# used for issue polling. This keeps a token in .env out of remote URLs and logs.
+if ! gh auth setup-git >/dev/null 2>&1; then
+  log "WARNING: GitHub authentication is not ready; polling will retry until gh auth login or MW_GITHUB_TOKEN is configured"
+fi
+
+mkdir -p "$MW_STATE_DIR" "$MW_TMP_ROOT/tmp" "$(dirname "$MW_CATALOG_REPO_DIR")"
+
+LOCK_DIR="$MW_STATE_DIR/lock"
+CHILD_PID=""
+STOP_REQUESTED=0
+
+release_lock() {
+  if [[ -d "$LOCK_DIR" ]]; then
+    rm -f "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
   fi
 }
 
-# Pull rate limit headers for debug
-debug_rate_limit() {
-  local headers_file="$1"
-  local limit remaining reset
-  limit="$(grep -i '^x-ratelimit-limit:' "$headers_file" | tail -n1 | awk '{print $2}' | tr -d '\r')"
-  remaining="$(grep -i '^x-ratelimit-remaining:' "$headers_file" | tail -n1 | awk '{print $2}' | tr -d '\r')"
-  reset="$(grep -i '^x-ratelimit-reset:' "$headers_file" | tail -n1 | awk '{print $2}' | tr -d '\r')"
-  if [[ -n "${limit:-}" || -n "${remaining:-}" ]]; then
-    log "DEBUG: rate_limit limit=${limit:-?} remaining=${remaining:-?} reset=${reset:-?}"
+request_stop() {
+  STOP_REQUESTED=1
+  log "Stop requested; waiting for the active training command to exit"
+  if [[ -n "$CHILD_PID" ]] && kill -0 "$CHILD_PID" >/dev/null 2>&1; then
+    kill -TERM "$CHILD_PID" >/dev/null 2>&1 || true
   fi
 }
 
-# Extract candidates from GitHub Search API response body file.
-# Output: lines "issue_number<TAB>raw_phrase"
-extract_candidates_tsv() {
-  local body_file="$1"
-  "$PY_BIN" - <<'PY' "$body_file"
-import json, re, sys, pathlib
-
-p = pathlib.Path(sys.argv[1])
-raw = p.read_text(encoding="utf-8", errors="replace").strip()
-if not raw:
-    sys.exit(0)
-
-data = json.loads(raw)
-items = data.get("items") if isinstance(data, dict) else None
-if not isinstance(items, list):
-    sys.exit(0)
-
-for it in items:
-    if not isinstance(it, dict):
-        continue
-    # Search API items are always issues/PRs; restrict to actual issues.
-    # If it has "pull_request" key, it's a PR.
-    if it.get("pull_request"):
-        continue
-
-    num = it.get("number")
-    title = (it.get("title") or "")
-    labels = [l.get("name") for l in (it.get("labels") or []) if isinstance(l, dict)]
-
-    m = re.match(r"^\s*mww:\s*(.+?)\s*$", title, flags=re.I)
-    if not m:
-        continue
-    phrase = (m.group(1) or "").strip()
-    if not phrase:
-        continue
-
-    # Skip if already processing or done
-    if "mww-processing" in labels or "mww-added" in labels:
-        continue
-
-    # Emit
-    if num is not None:
-        sys.stdout.write(f"{num}\t{phrase}\n")
-PY
+on_exit() {
+  release_lock
 }
 
-# GitHub API actions (issues + contents)
-add_labels() {
-  local repo="$1" number="$2"; shift 2
-  local labels_json
-  labels_json="$("$PY_BIN" - <<'PY' "$@"
-import json, sys
-labels = sys.argv[1:]
-labels = [l for l in labels if l]
-print(json.dumps({"labels": labels}))
-PY
-)"
-  local body_file headers_file http_code
-  body_file="$(mktemp)"; headers_file="$(mktemp)"
-  http_code="$(curl_to_files POST "https://api.github.com/repos/${repo}/issues/${number}/labels" "$body_file" "$headers_file" "$labels_json")"
-  if [[ "$MW_DEBUG" == "1" ]]; then
-    log "DEBUG: add_labels http=$http_code repo=$repo issue=$number labels='$*'"
-    debug_rate_limit "$headers_file"
-  fi
-  rm -f "$body_file" "$headers_file"
-  [[ "$http_code" == "200" || "$http_code" == "201" ]] || return 1
-}
+trap request_stop INT TERM
+trap 'log "Ignoring SIGHUP; watcher remains active"' HUP
+trap on_exit EXIT
 
-comment_issue() {
-  local repo="$1" number="$2" body="$3"
-  local payload
-  payload="$("$PY_BIN" - <<PY
-import json
-print(json.dumps({"body": ${body@Q}}))
-PY
-)"
-  local body_file headers_file http_code
-  body_file="$(mktemp)"; headers_file="$(mktemp)"
-  http_code="$(curl_to_files POST "https://api.github.com/repos/${repo}/issues/${number}/comments" "$body_file" "$headers_file" "$payload")"
-  if [[ "$MW_DEBUG" == "1" ]]; then
-    log "DEBUG: comment http=$http_code repo=$repo issue=$number"
-    debug_rate_limit "$headers_file"
-  fi
-  rm -f "$body_file" "$headers_file"
-  [[ "$http_code" == "200" || "$http_code" == "201" ]]
-}
-
-close_issue() {
-  local repo="$1" number="$2"
-  local body_file headers_file http_code
-  body_file="$(mktemp)"; headers_file="$(mktemp)"
-  http_code="$(curl_to_files PATCH "https://api.github.com/repos/${repo}/issues/${number}" "$body_file" "$headers_file" '{"state":"closed"}')"
-  if [[ "$MW_DEBUG" == "1" ]]; then
-    log "DEBUG: close_issue http=$http_code repo=$repo issue=$number"
-    debug_rate_limit "$headers_file"
-  fi
-  rm -f "$body_file" "$headers_file"
-  [[ "$http_code" == "200" ]]
-}
-
-# Content SHA lookup (for update vs create)
-get_content_sha() {
-  local repo="$1" path="$2" branch="$3"
-  local body_file headers_file http_code
-  body_file="$(mktemp)"; headers_file="$(mktemp)"
-
-  http_code="$(curl_to_files GET "https://api.github.com/repos/${repo}/contents/${path}?ref=${branch}" "$body_file" "$headers_file")"
-
-  if [[ "$MW_DEBUG" == "1" ]]; then
-    log "DEBUG: get_content_sha http=$http_code path=$path"
-  fi
-
-  # 200 => exists; 404 => not found
-  if [[ "$http_code" != "200" ]]; then
-    rm -f "$body_file" "$headers_file"
-    echo ""
+acquire_lock() {
+  if mkdir "$LOCK_DIR" >/dev/null 2>&1; then
+    printf '%s\n' "$$" > "$LOCK_DIR/pid"
     return 0
   fi
 
-  "$PY_BIN" - <<'PY' "$body_file"
-import json, sys, pathlib
-raw = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-j = json.loads(raw)
-print(j.get("sha","") or "")
-PY
+  local old_pid=""
+  if [[ -f "$LOCK_DIR/pid" ]]; then
+    old_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  fi
+  if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" >/dev/null 2>&1; then
+    log "ERROR: Another watcher is already running with PID $old_pid"
+    exit 1
+  fi
 
-  rm -f "$body_file" "$headers_file"
+  log "Removing stale watcher lock"
+  rm -f "$LOCK_DIR/pid"
+  rmdir "$LOCK_DIR" >/dev/null 2>&1 || {
+    log "ERROR: Could not remove stale lock: $LOCK_DIR"
+    exit 1
+  }
+  mkdir "$LOCK_DIR"
+  printf '%s\n' "$$" > "$LOCK_DIR/pid"
 }
 
-put_file() {
-  local repo="$1" branch="$2" path="$3" local_file="$4" message="$5"
+acquire_lock
 
-  if [[ ! -f "$local_file" ]]; then
-    log "❌ Missing local file to upload: $local_file"
+sleep_until_next_poll() {
+  local remaining="$MW_POLL_SECONDS"
+  while [[ $remaining -gt 0 && $STOP_REQUESTED -eq 0 ]]; do
+    if [[ $remaining -gt 5 ]]; then
+      sleep 5
+      remaining=$((remaining - 5))
+    else
+      sleep "$remaining"
+      remaining=0
+    fi
+  done
+}
+
+git_counts() {
+  git -C "$MW_CATALOG_REPO_DIR" rev-list --left-right --count \
+    "HEAD...origin/${MW_CATALOG_BRANCH}" 2>/dev/null || printf '0\t0\n'
+}
+
+sync_catalog_checkout() {
+  if [[ ! -d "$MW_CATALOG_REPO_DIR/.git" ]]; then
+    log "Cloning $MW_CATALOG_REPO into $MW_CATALOG_REPO_DIR"
+    if ! gh repo clone "$MW_CATALOG_REPO" "$MW_CATALOG_REPO_DIR" -- \
+      --branch "$MW_CATALOG_BRANCH" --single-branch; then
+      log "GitHub is unavailable or the catalog clone failed; will retry"
+      return 1
+    fi
+  fi
+
+  git -C "$MW_CATALOG_REPO_DIR" config user.name "tater-wake-word-watcher"
+  git -C "$MW_CATALOG_REPO_DIR" config user.email \
+    "tater-wake-word-watcher@users.noreply.github.com"
+
+  if ! git -C "$MW_CATALOG_REPO_DIR" fetch --quiet origin "$MW_CATALOG_BRANCH"; then
+    log "Could not refresh the catalog repository; will retry"
     return 1
   fi
 
-  local sha
-  sha="$(get_content_sha "$repo" "$path" "$branch")"
+  if [[ -n "$(git -C "$MW_CATALOG_REPO_DIR" status --porcelain)" ]]; then
+    # This is a watcher-owned checkout. Dirty V7 files can be the complete or
+    # partial output of a run whose connection failed before commit/push. The
+    # matching issue will validate and recover them instead of deleting them.
+    log "Catalog checkout contains interrupted local work; preserving it for recovery"
+    return 0
+  fi
 
-  local content_b64
-  content_b64="$("$PY_BIN" - <<PY
-import base64
-data=open(${local_file@Q},'rb').read()
-print(base64.b64encode(data).decode('utf-8'))
-PY
-)"
+  local counts ahead behind
+  counts="$(git_counts)"
+  ahead="$(printf '%s' "$counts" | awk '{print $1}')"
+  behind="$(printf '%s' "$counts" | awk '{print $2}')"
 
-  local payload
-  payload="$("$PY_BIN" - <<PY
+  if [[ "$behind" -gt 0 ]]; then
+    log "Updating catalog checkout from origin/$MW_CATALOG_BRANCH"
+    if ! git -C "$MW_CATALOG_REPO_DIR" rebase "origin/$MW_CATALOG_BRANCH"; then
+      git -C "$MW_CATALOG_REPO_DIR" rebase --abort >/dev/null 2>&1 || true
+      log "Catalog update could not be rebased cleanly; will retry"
+      return 1
+    fi
+  fi
+
+  counts="$(git_counts)"
+  ahead="$(printf '%s' "$counts" | awk '{print $1}')"
+  if [[ "$ahead" -gt 0 ]]; then
+    log "Publishing $ahead recovered catalog commit(s)"
+    if ! git -C "$MW_CATALOG_REPO_DIR" push origin \
+      "HEAD:${MW_CATALOG_BRANCH}"; then
+      log "Catalog push failed; keeping commits locally for the next poll"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+list_candidates() {
+  local issues_file="$MW_STATE_DIR/issues.json"
+  if ! gh issue list \
+    --repo "$MW_ISSUE_REPO" \
+    --state open \
+    --limit 1000 \
+    --json number,title,labels,createdAt > "$issues_file"; then
+    log "GitHub issue lookup failed; will retry after the connection returns"
+    return 1
+  fi
+
+  MW_LABEL_DONE="$MW_LABEL_DONE" \
+  MW_LABEL_FAILED="$MW_LABEL_FAILED" \
+  MW_RETRY_FAILED="$MW_RETRY_FAILED" \
+    python3 - "$issues_file" <<'PY'
+from __future__ import annotations
+
+import hashlib
 import json
-payload={
-  "message": ${message@Q},
-  "content": ${content_b64@Q},
-  "branch": ${branch@Q},
-}
-sha=${sha@Q}
-if sha:
-  payload["sha"]=sha
-print(json.dumps(payload))
+import os
+import re
+import sys
+import unicodedata
+from pathlib import Path
+
+
+def safe_slug(phrase: str) -> str:
+    normalized = unicodedata.normalize("NFKC", phrase).strip().lower()
+    slug = re.sub(r"[^a-z0-9_]+", "", re.sub(r"\s+", "_", normalized)).strip("_")
+    if slug:
+        return slug
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"wakeword_{digest}"
+
+
+done_label = os.environ["MW_LABEL_DONE"]
+failed_label = os.environ["MW_LABEL_FAILED"]
+retry_failed = os.environ.get("MW_RETRY_FAILED") == "1"
+issues = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+
+for issue in sorted(issues, key=lambda item: (item.get("createdAt", ""), item.get("number", 0))):
+    match = re.match(r"^\s*mww:\s*(.+?)\s*$", str(issue.get("title") or ""), flags=re.I)
+    if not match:
+        continue
+    labels = {
+        str(label.get("name") or "")
+        for label in issue.get("labels") or []
+        if isinstance(label, dict)
+    }
+    if done_label in labels or (failed_label in labels and not retry_failed):
+        continue
+
+    phrase = match.group(1).strip().replace("\t", " ").replace("\n", " ")
+    if phrase:
+        print(f"{int(issue['number'])}\t{phrase}\t{safe_slug(phrase)}")
 PY
-)"
-
-  local body_file headers_file http_code
-  body_file="$(mktemp)"; headers_file="$(mktemp)"
-  http_code="$(curl_to_files PUT "https://api.github.com/repos/${repo}/contents/${path}" "$body_file" "$headers_file" "$payload")"
-
-  if [[ "$MW_DEBUG" == "1" ]]; then
-    log "DEBUG: put_file http=$http_code repo=$repo path=$path file=$(basename "$local_file")"
-    debug_rate_limit "$headers_file"
-    if [[ "$http_code" != "200" && "$http_code" != "201" ]]; then
-      log "DEBUG: put_file body_head='$(head -c 200 "$body_file" | tr -d '\n' | tr -d '\r')'"
-    fi
-  fi
-
-  rm -f "$body_file" "$headers_file"
-  [[ "$http_code" == "200" || "$http_code" == "201" ]]
 }
 
-# -------------------- Startup logs --------------------
-log "Starting issue watcher"
-log "Issue repo:  $MW_ISSUE_REPO"
-log "Model repo:  $MW_MODEL_REPO"
-log "Branch:      $MW_MODEL_BRANCH"
-log "Base path:   $MW_MODEL_BASE_PATH"
-log "Poll every:  ${MW_POLL_SECONDS}s"
-log "Dry run:     $MW_DRY_RUN"
-log "Debug:       $MW_DEBUG"
-log "Train script:$TRAIN_SCRIPT"
+catalog_package_is_complete() {
+  local safe_word="$1"
+  local base="$MW_CATALOG_REPO_DIR/$MW_CATALOG_DIR/$safe_word"
+  local suffix
+  for suffix in .json .esphome.json .tflite .oww.json .oww.onnx .wake-bundle.json; do
+    [[ -f "${base}${suffix}" ]] || return 1
+  done
 
-# -------------------- Main loop --------------------
-while true; do
-  if [[ "$MW_DEBUG" == "1" ]]; then
-    log "Polling GitHub (Search API) for open mww: issues…"
+  (
+    cd "$MW_CATALOG_REPO_DIR" || exit 1
+    python3 - "$MW_CATALOG_DIR/$safe_word.json" \
+      "$MW_CATALOG_DIR/$safe_word.tflite" <<'PY'
+from pathlib import Path
+import sys
+
+from scripts.generate_wake_word_manifest import dual_model_fields
+
+raise SystemExit(
+    0 if dual_model_fields(Path(sys.argv[1]), Path(sys.argv[2])) else 1
+)
+PY
+  )
+}
+
+recover_catalog_package() {
+  local safe_word="$1"
+  catalog_package_is_complete "$safe_word" || return 0
+
+  local base="$MW_CATALOG_DIR/$safe_word"
+  (
+    cd "$MW_CATALOG_REPO_DIR" || exit 1
+    python3 scripts/generate_wake_word_manifest.py
+    git add \
+      "${base}.json" \
+      "${base}.esphome.json" \
+      "${base}.tflite" \
+      "${base}.oww.json" \
+      "${base}.oww.onnx" \
+      "${base}.wake-bundle.json" \
+      wake_word_manifest.json
+    if ! git diff --cached --quiet; then
+      log "Recovering completed local artifacts for $safe_word"
+      git commit -m "Add wake word: $safe_word"
+    fi
+    git push origin "HEAD:${MW_CATALOG_BRANCH}"
+  )
+}
+
+run_issue() {
+  local issue_number="$1" phrase="$2" safe_word="$3"
+  local event_file="$MW_STATE_DIR/issue-${issue_number}.json"
+
+  if ! sync_catalog_checkout; then
+    return 75
+  fi
+  if ! recover_catalog_package "$safe_word"; then
+    log "Could not publish recovered artifacts for #$issue_number; will retry"
+    return 75
   fi
 
-  body_file="$(mktemp)"
-  headers_file="$(mktemp)"
+  printf '{"issue":{"number":%s}}\n' "$issue_number" > "$event_file"
+  log "Processing #$issue_number: '$phrase' (artifact: $safe_word)"
 
-  # Search API: find open issues with "mww:" in title.
-  # NOTE: Search API is rate-limited to 30 req/min for authenticated requests.
-  # Query: repo:OWNER/REPO is:issue is:open in:title "mww:"
-  search_url="https://api.github.com/search/issues?q=repo:${MW_ISSUE_REPO}+is:issue+is:open+in:title+%22mww:%22&sort=created&order=asc&per_page=100"
+  (
+    cd "$MW_CATALOG_REPO_DIR" || exit 1
+    export GITHUB_REPOSITORY="$MW_ISSUE_REPO"
+    export GITHUB_EVENT_PATH="$event_file"
+    export WAKE_WORD_ISSUE_NUMBER="$issue_number"
+    export CATALOG_DIR="$MW_CATALOG_DIR"
+    export LABEL_PROCESSING="$MW_LABEL_PROCESSING"
+    export LABEL_DONE="$MW_LABEL_DONE"
+    export LABEL_FAILED="$MW_LABEL_FAILED"
+    export TATER_WAKE_EXTERNAL_ROOT="$MW_EXTERNAL_ROOT"
+    export TATER_WAKE_TRAINER_DIR="$ROOT_DIR"
+    export TATER_WAKE_TMP_ROOT="$MW_TMP_ROOT"
+    export TATER_WAKE_DATA_DIR="$MW_TRAINER_DATA_DIR"
+    export TATER_WAKE_SUPPORT_DIR="$MW_TRAINER_SUPPORT_DIR"
+    export RUNNER_TEMP="$MW_TMP_ROOT/tmp"
+    exec /bin/bash scripts/train_issue_wake_word.sh
+  ) &
+  CHILD_PID=$!
 
-  set +e
-  http_code="$(curl_to_files GET "$search_url" "$body_file" "$headers_file")"
-  curl_rc=$?
-  set -e
+  local train_rc=0
+  wait "$CHILD_PID" || train_rc=$?
+  CHILD_PID=""
+  rm -f "$event_file"
 
-  if [[ "$MW_DEBUG" == "1" ]]; then
-    first_http="$(head -n 1 "$headers_file" | tr -d '\r')"
-    bytes="$(wc -c <"$body_file" | tr -d ' ')"
-    log "DEBUG: curl_rc=$curl_rc http=$http_code first_http='${first_http}' url='${search_url}' body_bytes=$bytes"
-    debug_rate_limit "$headers_file"
-    log "DEBUG: body_head='$(head -c 180 "$body_file" | tr -d '\n' | tr -d '\r')'"
+  if [[ $train_rc -eq 0 ]]; then
+    log "Completed #$issue_number ($safe_word)"
+  else
+    log "Training #$issue_number exited with status $train_rc; the issue remains open"
   fi
+  return "$train_rc"
+}
 
-  if [[ $curl_rc -ne 0 || "$http_code" != "200" ]]; then
-    log "⚠️ GitHub search API failed (curl_rc=$curl_rc http=$http_code). Sleeping ${MW_POLL_SECONDS}s…"
-    rm -f "$body_file" "$headers_file"
-    sleep "$MW_POLL_SECONDS"
+log "Starting independent wake-word issue watcher"
+log "Issue repo:       $MW_ISSUE_REPO"
+log "Catalog checkout: $MW_CATALOG_REPO_DIR"
+log "Catalog path:     $MW_CATALOG_DIR"
+log "Trainer:          $ROOT_DIR"
+log "Training data:    $MW_TRAINER_DATA_DIR"
+log "Poll interval:    ${MW_POLL_SECONDS}s"
+log "Retry failed:     $MW_RETRY_FAILED"
+log "Dry run:          $MW_DRY_RUN"
+
+while [[ $STOP_REQUESTED -eq 0 ]]; do
+  candidates_file="$MW_STATE_DIR/candidates.tsv"
+  if ! list_candidates > "$candidates_file"; then
+    [[ "$MW_ONCE" == "1" ]] && break
+    sleep_until_next_poll
     continue
   fi
 
-  # -------- Candidate extraction (THIS is where set +e / set -e goes) --------
-  set +e
-  candidates_text="$(extract_candidates_tsv "$body_file")"
-  py_rc=$?
-  set -e
+  if [[ ! -s "$candidates_file" ]]; then
+    debug "No pending wake-word requests"
+  else
+    while IFS=$'\t' read -r issue_number phrase safe_word; do
+      [[ -n "${issue_number:-}" && -n "${phrase:-}" && -n "${safe_word:-}" ]] || continue
+      [[ $STOP_REQUESTED -eq 0 ]] || break
 
-  if [[ $py_rc -ne 0 ]]; then
-    log "❌ Candidate extraction failed (python rc=$py_rc). Sleeping ${MW_POLL_SECONDS}s…"
-    rm -f "$body_file" "$headers_file"
-    sleep "$MW_POLL_SECONDS"
-    continue
+      if [[ "$MW_DRY_RUN" == "1" ]]; then
+        log "DRY RUN: would process #$issue_number '$phrase' as '$safe_word'"
+        continue
+      fi
+
+      run_issue "$issue_number" "$phrase" "$safe_word" || true
+    done < "$candidates_file"
   fi
 
-  rm -f "$body_file" "$headers_file"
-
-  if [[ -z "${candidates_text:-}" ]]; then
-    if [[ "$MW_DEBUG" == "1" ]]; then
-      log "DEBUG: No matching issues found this poll."
-    fi
-    sleep "$MW_POLL_SECONDS"
-    continue
-  fi
-
-  # Process oldest first
-  while IFS=$'\t' read -r issue_number raw_phrase; do
-    [[ -n "${issue_number:-}" && -n "${raw_phrase:-}" ]] || continue
-
-    safe_word="$(safe_name "$raw_phrase")"
-    log "Found request: #${issue_number} phrase='${raw_phrase}' safe='${safe_word}'"
-
-    if [[ "$MW_DRY_RUN" == "1" ]]; then
-      log "DRY_RUN: would label issue, train, publish, comment, close."
-      continue
-    fi
-
-    # Label as processing first to avoid double pickup
-    log "Labeling #${issue_number} -> ${MW_LABEL_PROCESSING}"
-    if ! add_labels "$MW_ISSUE_REPO" "$issue_number" "$MW_LABEL_PROCESSING"; then
-      log "⚠️ Failed to add processing label to #${issue_number}, skipping"
-      continue
-    fi
-
-    # Train the requested phrase; use the safe slug only for artifact names.
-    log "Training: $TRAIN_SCRIPT \"${raw_phrase}\" (artifact slug: ${safe_word})"
-    set +e
-    ( cd "$ROOT_DIR" && MWW_ARTIFACT_SLUG="$safe_word" "$TRAIN_SCRIPT" "$raw_phrase" )
-    train_rc=$?
-    set -e
-
-    if [[ $train_rc -ne 0 ]]; then
-      log "❌ Training failed for '${safe_word}' (rc=$train_rc). Commenting and leaving issue open."
-      comment_issue "$MW_ISSUE_REPO" "$issue_number" "Training failed for '${safe_word}' (exit code ${train_rc}). Check runner logs." || true
-      continue
-    fi
-
-    # Expect artifacts in the local trained wake-word catalog
-    tflite_file="$ROOT_DIR/${MW_LOCAL_ARTIFACT_DIR}/${safe_word}.tflite"
-    json_file="$ROOT_DIR/${MW_LOCAL_ARTIFACT_DIR}/${safe_word}.json"
-
-    if [[ ! -f "$tflite_file" || ! -f "$json_file" ]]; then
-      log "❌ Artifacts not found after training: ${tflite_file} / ${json_file}"
-      comment_issue "$MW_ISSUE_REPO" "$issue_number" "Training finished but artifacts were not found for '${safe_word}'." || true
-      continue
-    fi
-
-    # Publish to model repo/path
-    if [[ -n "$MW_MODEL_BASE_PATH" ]]; then
-      tflite_path="${MW_MODEL_BASE_PATH}/${safe_word}.tflite"
-      json_path="${MW_MODEL_BASE_PATH}/${safe_word}.json"
-    else
-      tflite_path="${safe_word}.tflite"
-      json_path="${safe_word}.json"
-    fi
-
-    msg="Add microWakeWord: ${safe_word}"
-
-    log "Publishing to GitHub: ${MW_MODEL_REPO}@${MW_MODEL_BRANCH} -> ${tflite_path}, ${json_path}"
-    if ! put_file "$MW_MODEL_REPO" "$MW_MODEL_BRANCH" "$tflite_path" "$tflite_file" "$msg"; then
-      log "❌ Failed to upload tflite"
-      comment_issue "$MW_ISSUE_REPO" "$issue_number" "Training succeeded but upload failed for '${safe_word}.tflite'." || true
-      continue
-    fi
-    if ! put_file "$MW_MODEL_REPO" "$MW_MODEL_BRANCH" "$json_path" "$json_file" "$msg"; then
-      log "❌ Failed to upload json"
-      comment_issue "$MW_ISSUE_REPO" "$issue_number" "Training succeeded but upload failed for '${safe_word}.json'." || true
-      continue
-    fi
-
-    # Comment + label done + close
-    log "Commenting + labeling done + closing #${issue_number}"
-    comment_issue "$MW_ISSUE_REPO" "$issue_number" "$MW_DONE_COMMENT" || true
-    add_labels "$MW_ISSUE_REPO" "$issue_number" "$MW_LABEL_DONE" || true
-    close_issue "$MW_ISSUE_REPO" "$issue_number" || true
-
-    log "✅ Completed #${issue_number} ('${safe_word}')"
-  done <<< "$candidates_text"
-
-  sleep "$MW_POLL_SECONDS"
+  [[ "$MW_ONCE" == "1" ]] && break
+  sleep_until_next_poll
 done
+
+log "Watcher stopped"

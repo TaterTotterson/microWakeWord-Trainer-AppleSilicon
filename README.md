@@ -65,6 +65,74 @@ cd microWakeWord-Trainer-AppleSilicon
 
 ---
 
+## GitHub Issue Watcher
+
+`watcher.sh` is the headless automation path for the dedicated training Mac. It
+polls open `mww:` issues in
+[`TaterTotterson/Tater-Wake-Words`](https://github.com/TaterTotterson/Tater-Wake-Words),
+trains the paired MWW and OWW package, commits all six V7 artifacts plus the
+catalog manifest, comments on the issue, and closes it.
+
+The watcher does not depend on a continuously connected GitHub Actions runner.
+Local training continues through a temporary network outage. Failed pushes are
+kept in its dedicated catalog checkout and retried after the connection returns.
+Issues left with `mww-processing` after a restart are deliberately reclaimed.
+
+Authenticate once with GitHub CLI:
+
+```bash
+gh auth login
+```
+
+Alternatively, create a local `.env` file containing a token with issue and
+repository-content write access. `.env` is ignored by Git:
+
+```bash
+MW_GITHUB_TOKEN=github_pat_replace_me
+```
+
+Confirm the pending queue without changing anything:
+
+```bash
+MW_ONCE=1 MW_DRY_RUN=1 ./watcher.sh
+```
+
+Run it continuously in the current terminal:
+
+```bash
+./watcher.sh
+```
+
+For the training Mac, install it as a launchd service so it starts at login,
+survives terminal disconnects, and restarts if the watcher exits:
+
+```bash
+./install_watcher_launchd.sh
+```
+
+The service writes to `~/Library/Logs/TaterWakeWordWatcher.log`. Check it with:
+
+```bash
+tail -f ~/Library/Logs/TaterWakeWordWatcher.log
+```
+
+Remove the service with `./install_watcher_launchd.sh --uninstall`.
+
+Useful overrides include:
+
+- `MW_POLL_SECONDS=60` — issue polling interval.
+- `MW_CATALOG_REPO_DIR=/path/to/checkout` — dedicated catalog checkout.
+- `TATER_WAKE_TMP_ROOT=/path/to/temp` — temp files, caches, and watcher state.
+- `TATER_WAKE_DATA_DIR=/path/to/data` — persistent trainer datasets.
+- `MW_RETRY_FAILED=1` — include issues labeled `mww-failed`; leave this disabled
+  for the continuous service to avoid repeatedly training a permanently broken
+  request.
+
+Only one automation worker should be active. Disable the automatic self-hosted
+Actions trigger, or stop its runner, before starting this watcher.
+
+---
+
 ## Run The Web UI
 
 ```bash

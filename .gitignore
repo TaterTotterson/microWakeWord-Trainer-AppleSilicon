@@ -17,6 +17,8 @@ auto_train_models/
 
 # Local caches and virtual environments
 .cache/
+.env
+.watcher/
 .venv/
 .recorder-venv/
 macos/*/.build/
