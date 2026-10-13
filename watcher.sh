@@ -146,6 +146,60 @@ git_counts() {
     "HEAD...origin/${MW_CATALOG_BRANCH}" 2>/dev/null || printf '0\t0\n'
 }
 
+catalog_git_path_exists() {
+  local git_dir
+  git_dir="$(git -C "$MW_CATALOG_REPO_DIR" rev-parse --absolute-git-dir)"
+  [[ -e "$git_dir/$1" ]]
+}
+
+finish_catalog_merge() {
+  catalog_git_path_exists MERGE_HEAD || return 1
+
+  local conflicts conflict
+  conflicts="$(git -C "$MW_CATALOG_REPO_DIR" diff --name-only --diff-filter=U)"
+  if [[ -n "$conflicts" ]]; then
+    while IFS= read -r conflict; do
+      [[ -n "$conflict" ]] || continue
+      if [[ "$conflict" != "wake_word_manifest.json" ]]; then
+        log "Catalog merge has a non-generated conflict in $conflict"
+        return 1
+      fi
+    done <<< "$conflicts"
+    log "Resolving the generated wake-word manifest after catalog merge"
+  fi
+
+  (
+    cd "$MW_CATALOG_REPO_DIR" || exit 1
+    python3 scripts/generate_wake_word_manifest.py
+    git add wake_word_manifest.json
+    if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+      exit 1
+    fi
+    GIT_EDITOR=true git commit --no-edit
+  )
+}
+
+recover_interrupted_git_operation() {
+  if catalog_git_path_exists rebase-merge || \
+      catalog_git_path_exists rebase-apply; then
+    log "Aborting an interrupted catalog rebase from an earlier watcher run"
+    if ! git -C "$MW_CATALOG_REPO_DIR" rebase --abort; then
+      log "Could not abort the interrupted catalog rebase; will retry"
+      return 1
+    fi
+  fi
+
+  if catalog_git_path_exists MERGE_HEAD; then
+    log "Finishing an interrupted catalog merge"
+    if ! finish_catalog_merge; then
+      git -C "$MW_CATALOG_REPO_DIR" merge --abort >/dev/null 2>&1 || true
+      log "Could not safely finish the interrupted catalog merge; will retry"
+      return 1
+    fi
+  fi
+  return 0
+}
+
 sync_catalog_checkout() {
   if [[ ! -d "$MW_CATALOG_REPO_DIR/.git" ]]; then
     log "Cloning $MW_CATALOG_REPO into $MW_CATALOG_REPO_DIR"
@@ -159,6 +213,10 @@ sync_catalog_checkout() {
   git -C "$MW_CATALOG_REPO_DIR" config user.name "tater-wake-word-watcher"
   git -C "$MW_CATALOG_REPO_DIR" config user.email \
     "tater-wake-word-watcher@users.noreply.github.com"
+
+  if ! recover_interrupted_git_operation; then
+    return 1
+  fi
 
   if ! git -C "$MW_CATALOG_REPO_DIR" fetch --quiet origin "$MW_CATALOG_BRANCH"; then
     log "Could not refresh the catalog repository; will retry"
@@ -178,11 +236,29 @@ sync_catalog_checkout() {
   ahead="$(printf '%s' "$counts" | awk '{print $1}')"
   behind="$(printf '%s' "$counts" | awk '{print $2}')"
 
-  if [[ "$behind" -gt 0 ]]; then
+  if [[ "$behind" -gt 0 && "$ahead" -eq 0 ]]; then
     log "Updating catalog checkout from origin/$MW_CATALOG_BRANCH"
-    if ! git -C "$MW_CATALOG_REPO_DIR" rebase "origin/$MW_CATALOG_BRANCH"; then
-      git -C "$MW_CATALOG_REPO_DIR" rebase --abort >/dev/null 2>&1 || true
-      log "Catalog update could not be rebased cleanly; will retry"
+    if ! git -C "$MW_CATALOG_REPO_DIR" merge --ff-only \
+      "origin/$MW_CATALOG_BRANCH"; then
+      log "Catalog update could not be fast-forwarded; will retry"
+      return 1
+    fi
+  elif [[ "$behind" -gt 0 ]]; then
+    # Each wake-word commit regenerates wake_word_manifest.json, so two valid
+    # additions commonly conflict when a local commit could not be pushed and
+    # main advanced independently. Merge the histories and regenerate that
+    # derived file from the combined artifacts instead of rebasing it.
+    log "Merging origin/$MW_CATALOG_BRANCH into recovered local catalog commits"
+    if ! git -C "$MW_CATALOG_REPO_DIR" merge --no-ff --no-commit --no-edit \
+      "origin/$MW_CATALOG_BRANCH"; then
+      if ! finish_catalog_merge; then
+        git -C "$MW_CATALOG_REPO_DIR" merge --abort >/dev/null 2>&1 || true
+        log "Catalog update has conflicts outside the generated manifest; will retry"
+        return 1
+      fi
+    elif ! finish_catalog_merge; then
+      git -C "$MW_CATALOG_REPO_DIR" merge --abort >/dev/null 2>&1 || true
+      log "Catalog merge could not regenerate its manifest; will retry"
       return 1
     fi
   fi
@@ -214,6 +290,8 @@ list_candidates() {
   MW_LABEL_DONE="$MW_LABEL_DONE" \
   MW_LABEL_FAILED="$MW_LABEL_FAILED" \
   MW_RETRY_FAILED="$MW_RETRY_FAILED" \
+  MW_CATALOG_REPO_DIR="$MW_CATALOG_REPO_DIR" \
+  MW_CATALOG_DIR="$MW_CATALOG_DIR" \
     python3 - "$issues_file" <<'PY'
 from __future__ import annotations
 
@@ -238,6 +316,8 @@ def safe_slug(phrase: str) -> str:
 done_label = os.environ["MW_LABEL_DONE"]
 failed_label = os.environ["MW_LABEL_FAILED"]
 retry_failed = os.environ.get("MW_RETRY_FAILED") == "1"
+catalog_repo_dir = Path(os.environ["MW_CATALOG_REPO_DIR"])
+catalog_dir = os.environ["MW_CATALOG_DIR"]
 issues = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 
 for issue in sorted(issues, key=lambda item: (item.get("createdAt", ""), item.get("number", 0))):
@@ -249,12 +329,31 @@ for issue in sorted(issues, key=lambda item: (item.get("createdAt", ""), item.ge
         for label in issue.get("labels") or []
         if isinstance(label, dict)
     }
-    if done_label in labels or (failed_label in labels and not retry_failed):
+    if done_label in labels:
         continue
 
     phrase = match.group(1).strip().replace("\t", " ").replace("\n", " ")
     if phrase:
-        print(f"{int(issue['number'])}\t{phrase}\t{safe_slug(phrase)}")
+        slug = safe_slug(phrase)
+        base = catalog_repo_dir / catalog_dir / slug
+        package_complete = all(
+            Path(f"{base}{suffix}").is_file()
+            for suffix in (
+                ".json",
+                ".esphome.json",
+                ".tflite",
+                ".oww.json",
+                ".oww.onnx",
+                ".wake-bundle.json",
+            )
+        )
+        # A publish failure can label the issue failed after all training has
+        # completed. Reclaim that request when its complete local package is
+        # present so the watcher can publish it and close the issue without
+        # retraining. Other failed requests still require MW_RETRY_FAILED=1.
+        if failed_label in labels and not retry_failed and not package_complete:
+            continue
+        print(f"{int(issue['number'])}\t{phrase}\t{slug}")
 PY
 }
 
@@ -383,7 +482,12 @@ while [[ $STOP_REQUESTED -eq 0 ]]; do
         continue
       fi
 
-      run_issue "$issue_number" "$phrase" "$safe_word" || true
+      run_rc=0
+      run_issue "$issue_number" "$phrase" "$safe_word" || run_rc=$?
+      if [[ $run_rc -eq 75 ]]; then
+        log "Catalog or GitHub is temporarily unavailable; deferring the remaining requests"
+        break
+      fi
     done < "$candidates_file"
   fi
 

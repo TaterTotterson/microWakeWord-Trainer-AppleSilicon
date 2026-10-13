@@ -73,7 +73,10 @@ catalog manifest, comments on the issue, and closes it.
 The watcher does not depend on a continuously connected GitHub Actions runner.
 Local training continues through a temporary network outage. Failed pushes are
 kept in its dedicated catalog checkout and retried after the connection returns.
-Issues left with `mww-processing` after a restart are deliberately reclaimed.
+If GitHub advances meanwhile, the watcher merges both additions and regenerates
+the derived catalog manifest. Issues left with `mww-processing`, or labeled
+`mww-failed` despite having a complete local package, are reclaimed after a
+restart without retraining.
 
 Authenticate once with GitHub CLI:
 
