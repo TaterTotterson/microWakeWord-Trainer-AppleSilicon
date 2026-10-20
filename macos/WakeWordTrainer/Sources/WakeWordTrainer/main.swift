@@ -431,6 +431,8 @@ private final class BackendManager {
             "output/",
             "openwakeword/",
             "tools/openwakeword-trainer/",
+            "nanowakeword/",
+            "tools/nanowakeword-trainer/",
             "generated_samples/",
             "generated_augmented_features/",
             "personal_augmented_features/",

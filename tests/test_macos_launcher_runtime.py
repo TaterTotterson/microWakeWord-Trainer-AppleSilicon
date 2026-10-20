@@ -77,6 +77,10 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
         self.assertIn('"tts-envs/"', self.launcher)
         self.assertIn('"voice-bank/"', self.launcher)
 
+    def test_app_updates_preserve_nanowakeword_cache_and_training_data(self):
+        self.assertIn('"nanowakeword/"', self.launcher)
+        self.assertIn('"tools/nanowakeword-trainer/"', self.launcher)
+
     def test_termination_reply_runs_in_appkit_modal_run_loop(self):
         start = self.launcher.index("func applicationShouldTerminate(")
         end = self.launcher.index("private func startRecoveryWatchdog", start)

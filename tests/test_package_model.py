@@ -24,7 +24,7 @@ class PackageModelTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            model_path, json_path, esphome_path = package_model.package_model(
+            model_path, bundle_path, esphome_path = package_model.package_model(
                 "Hey Tater",
                 "en",
                 calibration_path,
@@ -34,20 +34,23 @@ class PackageModelTests(unittest.TestCase):
             )
 
             self.assertEqual(model_path.name, "hey_tater.tflite")
-            self.assertEqual(json_path.name, "hey_tater.json")
+            self.assertEqual(bundle_path.name, "hey_tater.wake-bundle.json")
             self.assertEqual(esphome_path.name, "hey_tater.esphome.json")
             self.assertEqual(model_path.read_bytes(), b"model")
 
-            tater_payload = json.loads(json_path.read_text(encoding="utf-8"))
+            tater_payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+            micro_payload = tater_payload["micro_wake_word"]
             esphome_payload = json.loads(esphome_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 set(esphome_payload),
                 set(package_model.ESPHOME_MANIFEST_KEYS),
             )
             self.assertEqual(esphome_payload["model"], "hey_tater.tflite")
-            self.assertEqual(esphome_payload["micro"], tater_payload["micro"])
-            self.assertIn("tater_native", tater_payload)
-            self.assertIn("calibration", tater_payload)
+            self.assertEqual(tater_payload["schema_version"], 3)
+            self.assertEqual(esphome_payload["micro"], micro_payload["micro"])
+            self.assertIn("tater_native", micro_payload)
+            self.assertIn("calibration", micro_payload)
+            self.assertFalse((bundle_path.parent / "hey_tater.json").exists())
             self.assertNotIn("tater_native", esphome_payload)
             self.assertNotIn("calibration", esphome_payload)
 
@@ -57,7 +60,7 @@ class PackageModelTests(unittest.TestCase):
             source_model = root / "source.tflite"
             source_model.write_bytes(b"model")
 
-            model_path, json_path, esphome_path = package_model.package_model(
+            model_path, bundle_path, esphome_path = package_model.package_model(
                 "こんにちは タター",
                 "ja",
                 root / "missing-calibration.json",
@@ -69,9 +72,9 @@ class PackageModelTests(unittest.TestCase):
             expected_slug = package_model.safe_slug("こんにちは タター")
             self.assertRegex(expected_slug, r"^wakeword_[0-9a-f]{8}$")
             self.assertEqual(model_path.name, f"{expected_slug}.tflite")
-            self.assertEqual(json_path.name, f"{expected_slug}.json")
+            self.assertEqual(bundle_path.name, f"{expected_slug}.wake-bundle.json")
             self.assertEqual(esphome_path.name, f"{expected_slug}.esphome.json")
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            payload = json.loads(bundle_path.read_text(encoding="utf-8"))["micro_wake_word"]
             self.assertEqual(payload["wake_word"], "こんにちは タター")
             self.assertEqual(payload["trained_languages"], ["ja"])
 

@@ -55,6 +55,8 @@ rsync -a --delete \
   --exclude='output/' \
   --exclude='openwakeword/' \
   --exclude='tools/openwakeword-trainer/' \
+  --exclude='nanowakeword/' \
+  --exclude='tools/nanowakeword-trainer/' \
   --exclude='generated_samples/' \
   --exclude='generated_augmented_features/' \
   --exclude='personal_augmented_features/' \

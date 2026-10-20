@@ -33,6 +33,11 @@ QA_SPEC = importlib.util.spec_from_file_location("tts_reference_qa", QA_PATH)
 assert QA_SPEC is not None and QA_SPEC.loader is not None
 qa_module = importlib.util.module_from_spec(QA_SPEC)
 QA_SPEC.loader.exec_module(qa_module)
+CACHE_PATH = REPO_ROOT / "scripts_macos" / "tts_cache.py"
+CACHE_SPEC = importlib.util.spec_from_file_location("tts_cache", CACHE_PATH)
+assert CACHE_SPEC is not None and CACHE_SPEC.loader is not None
+cache_module = importlib.util.module_from_spec(CACHE_SPEC)
+CACHE_SPEC.loader.exec_module(cache_module)
 
 
 def write_tone(
@@ -830,6 +835,83 @@ class ModernTtsTests(unittest.TestCase):
             self.assertEqual(len(list(output_dir.glob("*.wav"))), 8)
             self.assertTrue((output_dir / ".generation_manifest.json").is_file())
 
+    def test_legacy_tts_manifest_can_be_reused_after_app_update(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / ".generation_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "signature": {
+                            "generator_version": 1,
+                            "phrase": "hey tater",
+                            "language": "en",
+                            "english_accent": "mixed",
+                            "tts_mode": "hybrid",
+                            "samples": 50000,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(
+                cache_module.manifest_matches_requested_corpus(
+                    manifest_path,
+                    phrase="hey tater",
+                    language="en",
+                    english_accent="mixed",
+                    tts_mode="hybrid",
+                    samples=50000,
+                    batch_size=8,
+                    voice_count=128,
+                )
+            )
+            self.assertFalse(
+                cache_module.manifest_matches_requested_corpus(
+                    manifest_path,
+                    phrase="hello tater",
+                    language="en",
+                    english_accent="mixed",
+                    tts_mode="hybrid",
+                    samples=50000,
+                    batch_size=8,
+                    voice_count=128,
+                )
+            )
+
+    def test_current_tts_manifest_rejects_changed_voice_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / ".generation_manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "signature": {
+                            "phrase": "hey tater",
+                            "language": "en",
+                            "english_accent": "mixed",
+                            "tts_mode": "modern",
+                            "samples": 100,
+                            "batch_size": 4,
+                            "voice_count": 16,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertFalse(
+                cache_module.manifest_matches_requested_corpus(
+                    manifest_path,
+                    phrase="hey tater",
+                    language="en",
+                    english_accent="mixed",
+                    tts_mode="modern",
+                    samples=100,
+                    batch_size=4,
+                    voice_count=32,
+                )
+            )
+
     def test_apple_training_and_ui_are_wired_for_modern_tts(self) -> None:
         training_script = (REPO_ROOT / "train_microwakeword_macos.sh").read_text(encoding="utf-8")
         self.assertIn("tts_generate_samples.py", training_script)
@@ -842,6 +924,15 @@ class ModernTtsTests(unittest.TestCase):
         self.assertIn('"--ffmpeg" "$FFMPEG_BIN"', training_script)
         self.assertIn("ffmpeg_health_check", training_script)
         self.assertIn('select_ffmpeg_formula "ffmpeg"', training_script)
+        cache_key_start = training_script.index("compute_sample_cache_key()")
+        cache_key_end = training_script.index("compute_personal_cache_key()", cache_key_start)
+        cache_key_source = training_script[cache_key_start:cache_key_end]
+        self.assertIn("cache_schema=2", cache_key_source)
+        self.assertIn("voice_count=%s", cache_key_source)
+        self.assertNotIn("tts_generate_samples.py", cache_key_source)
+        self.assertNotIn("generator=%N:%m:%z", cache_key_source)
+        self.assertIn("generation_manifest_matches_requested_corpus", training_script)
+        self.assertIn("Reusing the persistent TTS corpus after the app update", training_script)
         packaging_lines = training_script.splitlines()
         packaging_start = next(
             index

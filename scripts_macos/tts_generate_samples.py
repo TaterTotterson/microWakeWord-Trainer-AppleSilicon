@@ -390,6 +390,8 @@ class Generator:
             "english_accent": self.english_accent,
             "tts_mode": self.args.tts_mode,
             "samples": self.args.samples,
+            "batch_size": self.args.batch_size,
+            "voice_count": self.args.voice_count,
             "engines": engines,
             "models": {
                 "omnivoice": OMNIVOICE_MODEL,

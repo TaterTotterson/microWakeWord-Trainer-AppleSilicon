@@ -537,20 +537,14 @@ write_cache_key() {
 
 compute_sample_cache_key() {
   {
+    printf 'cache_schema=2\n'
     printf 'target=%s\n' "$TARGET_WORD"
     printf 'samples=%s\n' "$MAX_TTS_SAMPLES"
     printf 'batch=%s\n' "$BATCH_SIZE"
     printf 'language=%s\n' "$LANGUAGE"
     printf 'english_accent=%s\n' "$ENGLISH_ACCENT"
     printf 'tts_mode=%s\n' "$TTS_MODE"
-    for generator_file in \
-      "$SOURCE_DIR/tts_config.py" \
-      "$SOURCE_DIR/scripts_macos/tts_generate_samples.py" \
-      "$SOURCE_DIR/scripts_macos/tts_qwen_mlx_worker.py" \
-      "$SOURCE_DIR/scripts_macos/tts_moss_mlx_worker.py" \
-      "$SOURCE_DIR/scripts_macos/setup_modern_tts_envs"; do
-      stat -f 'generator=%N:%m:%z' "$generator_file"
-    done
+    printf 'voice_count=%s\n' "$TTS_VOICE_COUNT"
     for model_path in "${PIPER_MODELS[@]}"; do
       if [[ -e "$model_path" ]]; then
         stat -f 'model=%N:%m:%z' "$model_path"
@@ -559,6 +553,20 @@ compute_sample_cache_key() {
       fi
     done
   } | shasum -a 256 | awk '{print $1}'
+}
+
+generation_manifest_matches_requested_corpus() {
+  local manifest_path="$1"
+  [[ -f "$manifest_path" ]] || return 1
+  "$PY" "$SOURCE_DIR/scripts_macos/tts_cache.py" \
+    "$manifest_path" \
+    --phrase "$TARGET_WORD" \
+    --language "$LANGUAGE" \
+    --english-accent "$ENGLISH_ACCENT" \
+    --tts-mode "$TTS_MODE" \
+    --samples "$MAX_TTS_SAMPLES" \
+    --batch-size "$BATCH_SIZE" \
+    --voice-count "$TTS_VOICE_COUNT"
 }
 
 compute_personal_cache_key() {
@@ -616,15 +624,36 @@ sample_cache_hit=false
 count_existing=$(count_matching_files "generated_samples" "*.wav")
 cached_sample_key="$(read_cache_key "$SAMPLE_CACHE_KEY_FILE")"
 cached_sample_stamp="$(read_cache_key "$SAMPLE_CACHE_STAMP_FILE")"
-if [[ "${count_existing:-0}" -eq "$MAX_TTS_SAMPLES" && -n "$cached_sample_key" && -n "$cached_sample_stamp" && "$cached_sample_key" == "$SAMPLE_CACHE_KEY" ]]; then
-  sample_cache_hit=true
-  echo "✅ Reusing generated samples for the same wake word and voice setup."
-else
+if [[ "${count_existing:-0}" -eq "$MAX_TTS_SAMPLES" ]]; then
+  if [[ -n "$cached_sample_key" && -n "$cached_sample_stamp" && "$cached_sample_key" == "$SAMPLE_CACHE_KEY" ]]; then
+    sample_cache_hit=true
+    echo "✅ Reusing generated samples for the same wake word and voice setup."
+  elif generation_manifest_matches_requested_corpus "generated_samples/.generation_manifest.json"; then
+    sample_cache_hit=true
+    echo "✅ Reusing the persistent TTS corpus after the app update."
+    # Preserve the old content identity so matching feature caches remain valid.
+    # A genuinely changed phrase or TTS setting fails the manifest check and
+    # creates a fresh cache using the stable schema-v2 key.
+    if [[ -n "$cached_sample_key" ]]; then
+      SAMPLE_CACHE_KEY="$cached_sample_key"
+    else
+      write_cache_key "$SAMPLE_CACHE_KEY_FILE" "$SAMPLE_CACHE_KEY"
+    fi
+    if [[ -z "$cached_sample_stamp" ]]; then
+      cached_sample_stamp="${SAMPLE_CACHE_KEY}:recovered"
+      write_cache_key "$SAMPLE_CACHE_STAMP_FILE" "$cached_sample_stamp"
+    fi
+  fi
+fi
+
+if [[ "$sample_cache_hit" != "true" ]]; then
   if [[ "${count_existing:-0}" -gt 0 || -n "$cached_sample_key" || -n "$cached_sample_stamp" ]]; then
     echo "♻️ Generated sample cache changed or is incomplete; rebuilding generated samples."
     rm -rf generated_samples
     mkdir -p generated_samples
   fi
+else
+  echo "ℹ️ Skipping TTS generation because cached samples are still valid."
 fi
 
 if [[ "$sample_cache_hit" != "true" ]]; then
@@ -662,8 +691,11 @@ if [[ "$sample_cache_hit" != "true" ]]; then
   fi
   write_cache_key "$SAMPLE_CACHE_KEY_FILE" "$SAMPLE_CACHE_KEY"
   write_cache_key "$SAMPLE_CACHE_STAMP_FILE" "${SAMPLE_CACHE_KEY}:$(date +%s)"
-else
-  echo "ℹ️ Skipping TTS generation because cached samples are still valid."
+fi
+
+if [[ "${MWW_GENERATE_ONLY:-0}" == "1" ]]; then
+  echo "✅ Shared positive TTS corpus is ready; model training was not requested."
+  exit 0
 fi
 
 # ── (C) pull/prepare augmentation datasets (RIR, Audioset, FMA) ──────────────

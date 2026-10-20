@@ -1,3 +1,5 @@
-- Restored openWakeWord training for wake phrases containing words missing from CMUdict.
-- Downloads Tater's preserved DeepPhonemizer checkpoint from Hugging Face and verifies its exact size and SHA-256 before use.
-- Automatically replaces cached S3 error responses and pins the macOS app to openWakeWord Trainer v1.0.3.
+- Added selectable MicroWakeWord, openWakeWord, NanoWakeWord CNN, and NanoWakeWord GRU training, including training every selected model in one run.
+- Added one canonical Tater wake bundle that can carry any trained model combination while retaining the separate MicroWakeWord-only ESPHome manifest.
+- Pinned NanoWakeWord training to Tater's tested helper revision with shared TTS, personal positive/negative samples, streaming validation, calibrated runtime policy, and corrective retry support.
+- Reused the same-phrase modern TTS corpus across app updates while still rebuilding stale negative and feature caches when their inputs change.
+- Removed local paths and bulky training diagnostics from published bundles and pruned obsolete companion metadata and DNN artifacts.

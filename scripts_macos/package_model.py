@@ -9,9 +9,14 @@ import json
 import os
 import re
 import shutil
+import sys
 import unicodedata
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from wake_bundle import publish_micro_wake_word  # noqa: E402
 
 
 DEFAULT_MODEL_PATH = Path(
@@ -98,7 +103,7 @@ def package_model(
         else "stream_state_internal_quant"
     )
     model_path = output_dir / f"{basename}.tflite"
-    json_path = output_dir / f"{basename}.json"
+    bundle_path = output_dir / f"{basename}.wake-bundle.json"
     esphome_json_path = output_dir / f"{basename}.esphome.json"
     shutil.copy(source_model, model_path)
 
@@ -179,16 +184,22 @@ def package_model(
         },
     }
 
-    json_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    publish_micro_wake_word(
+        trained_dir=output_dir,
+        safe_word=basename,
+        phrase=wake_word,
+        metadata=metadata,
+        model_path=model_path,
+    )
     esphome_json_path.write_text(
         json.dumps(esphome_manifest(metadata), indent=2) + "\n",
         encoding="utf-8",
     )
     print(
-        f"📦 Wrote {model_path}, {json_path}, and {esphome_json_path} "
+        f"📦 Wrote {model_path}, {bundle_path}, and {esphome_json_path} "
         f"(wake word: {wake_word!r})"
     )
-    return model_path, json_path, esphome_json_path
+    return model_path, bundle_path, esphome_json_path
 
 
 def parse_args() -> argparse.Namespace:
