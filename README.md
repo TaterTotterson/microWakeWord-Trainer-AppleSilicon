@@ -67,8 +67,10 @@ cd microWakeWord-Trainer-AppleSilicon
 `watcher.sh` is the headless automation path for the dedicated training Mac. It
 polls open `mww:` issues in
 [`TaterTotterson/Tater-Wake-Words`](https://github.com/TaterTotterson/Tater-Wake-Words),
-trains the paired MWW and OWW package, commits all six V7 artifacts plus the
-catalog manifest, comments on the issue, and closes it.
+trains MWW, OWW, NanoWakeWord CNN, and NanoWakeWord GRU, commits the six V8
+artifacts plus the catalog manifest, comments on the issue, and closes it. V8
+uses one canonical `.wake-bundle.json` in Tater and keeps a separate
+`.esphome.json` for ESPHome microWakeWord.
 
 The watcher does not depend on a continuously connected GitHub Actions runner.
 Local training continues through a temporary network outage. Failed pushes are
@@ -122,6 +124,7 @@ Useful overrides include:
 
 - `MW_POLL_SECONDS=60` — issue polling interval.
 - `MW_CATALOG_REPO_DIR=/path/to/checkout` — dedicated catalog checkout.
+- `MW_CATALOG_DIR=microWakeWordsV8` — destination catalog folder.
 - `TATER_WAKE_TMP_ROOT=/path/to/temp` — temp files, caches, and watcher state.
 - `TATER_WAKE_DATA_DIR=/path/to/data` — persistent trainer datasets.
 - `MW_RETRY_FAILED=1` — include issues labeled `mww-failed`; leave this disabled

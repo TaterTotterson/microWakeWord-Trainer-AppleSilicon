@@ -22,7 +22,7 @@ fi
 MW_ISSUE_REPO="${MW_ISSUE_REPO:-TaterTotterson/Tater-Wake-Words}"
 MW_CATALOG_REPO="${MW_CATALOG_REPO:-$MW_ISSUE_REPO}"
 MW_CATALOG_BRANCH="${MW_CATALOG_BRANCH:-main}"
-MW_CATALOG_DIR="${MW_CATALOG_DIR:-microWakeWordsV7}"
+MW_CATALOG_DIR="${MW_CATALOG_DIR:-microWakeWordsV8}"
 MW_POLL_SECONDS="${MW_POLL_SECONDS:-60}"
 MW_LABEL_PROCESSING="${MW_LABEL_PROCESSING:-mww-processing}"
 MW_LABEL_DONE="${MW_LABEL_DONE:-mww-added}"
@@ -224,7 +224,7 @@ sync_catalog_checkout() {
   fi
 
   if [[ -n "$(git -C "$MW_CATALOG_REPO_DIR" status --porcelain)" ]]; then
-    # This is a watcher-owned checkout. Dirty V7 files can be the complete or
+    # This is a watcher-owned checkout. Dirty V8 files can be the complete or
     # partial output of a run whose connection failed before commit/push. The
     # matching issue will validate and recover them instead of deleting them.
     log "Catalog checkout contains interrupted local work; preserving it for recovery"
@@ -339,12 +339,12 @@ for issue in sorted(issues, key=lambda item: (item.get("createdAt", ""), item.ge
         package_complete = all(
             Path(f"{base}{suffix}").is_file()
             for suffix in (
-                ".json",
+                ".wake-bundle.json",
                 ".esphome.json",
                 ".tflite",
-                ".oww.json",
                 ".oww.onnx",
-                ".wake-bundle.json",
+                ".nww.cnn.onnx",
+                ".nww.gru.onnx",
             )
         )
         # A publish failure can label the issue failed after all training has
@@ -361,21 +361,20 @@ catalog_package_is_complete() {
   local safe_word="$1"
   local base="$MW_CATALOG_REPO_DIR/$MW_CATALOG_DIR/$safe_word"
   local suffix
-  for suffix in .json .esphome.json .tflite .oww.json .oww.onnx .wake-bundle.json; do
+  for suffix in .wake-bundle.json .esphome.json .tflite .oww.onnx .nww.cnn.onnx .nww.gru.onnx; do
     [[ -f "${base}${suffix}" ]] || return 1
   done
 
   (
     cd "$MW_CATALOG_REPO_DIR" || exit 1
-    python3 - "$MW_CATALOG_DIR/$safe_word.json" \
-      "$MW_CATALOG_DIR/$safe_word.tflite" <<'PY'
+    python3 - "$MW_CATALOG_DIR/$safe_word.wake-bundle.json" <<'PY'
 from pathlib import Path
 import sys
 
-from scripts.generate_wake_word_manifest import dual_model_fields
+from scripts.generate_wake_word_manifest import bundle_model_fields
 
 raise SystemExit(
-    0 if dual_model_fields(Path(sys.argv[1]), Path(sys.argv[2])) else 1
+    0 if bundle_model_fields(Path(sys.argv[1])) else 1
 )
 PY
   )
@@ -390,12 +389,12 @@ recover_catalog_package() {
     cd "$MW_CATALOG_REPO_DIR" || exit 1
     python3 scripts/generate_wake_word_manifest.py
     git add \
-      "${base}.json" \
+      "${base}.wake-bundle.json" \
       "${base}.esphome.json" \
       "${base}.tflite" \
-      "${base}.oww.json" \
       "${base}.oww.onnx" \
-      "${base}.wake-bundle.json" \
+      "${base}.nww.cnn.onnx" \
+      "${base}.nww.gru.onnx" \
       wake_word_manifest.json
     if ! git diff --cached --quiet; then
       log "Recovering completed local artifacts for $safe_word"

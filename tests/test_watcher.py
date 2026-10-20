@@ -64,16 +64,16 @@ class WatcherTests(unittest.TestCase):
 
             catalog_repo = temp / "catalog"
             if recovered_failed:
-                catalog_dir = catalog_repo / "microWakeWordsV7"
+                catalog_dir = catalog_repo / "microWakeWordsV8"
                 catalog_dir.mkdir(parents=True)
                 base = catalog_dir / "failed_before"
                 for suffix in (
-                    ".json",
+                    ".wake-bundle.json",
                     ".esphome.json",
                     ".tflite",
-                    ".oww.json",
                     ".oww.onnx",
-                    ".wake-bundle.json",
+                    ".nww.cnn.onnx",
+                    ".nww.gru.onnx",
                 ):
                     Path(f"{base}{suffix}").write_text("complete", encoding="utf-8")
 
@@ -119,7 +119,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         output = result.stdout
         self.assertIn("TaterTotterson/Tater-Wake-Words", output)
-        self.assertIn("microWakeWordsV7", output)
+        self.assertIn("microWakeWordsV8", output)
         self.assertIn("#11 'oldest request'", output)
         self.assertIn("#12 'resume me'", output)
         self.assertIn("#15 'newest request'", output)
@@ -152,8 +152,8 @@ class WatcherTests(unittest.TestCase):
             self.git("checkout", "-b", "main", cwd=seed)
             self.configure_git(seed)
 
-            (seed / "microWakeWordsV7").mkdir()
-            (seed / "microWakeWordsV7" / "base.marker").write_text(
+            (seed / "microWakeWordsV8").mkdir()
+            (seed / "microWakeWordsV8" / "base.marker").write_text(
                 "base\n", encoding="utf-8"
             )
             (seed / "scripts").mkdir()
@@ -161,7 +161,7 @@ class WatcherTests(unittest.TestCase):
             generator.write_text(
                 "import json\n"
                 "from pathlib import Path\n"
-                "names = sorted(p.stem for p in Path('microWakeWordsV7').glob('*.marker'))\n"
+                "names = sorted(p.stem for p in Path('microWakeWordsV8').glob('*.marker'))\n"
                 "Path('wake_word_manifest.json').write_text(json.dumps(names) + '\\n')\n",
                 encoding="utf-8",
             )
@@ -177,7 +177,7 @@ class WatcherTests(unittest.TestCase):
 
             self.git("clone", str(origin), str(catalog), cwd=temp)
             self.configure_git(catalog)
-            (catalog / "microWakeWordsV7" / "bart.marker").write_text(
+            (catalog / "microWakeWordsV8" / "bart.marker").write_text(
                 "bart\n", encoding="utf-8"
             )
             self.run_generator(catalog)
@@ -186,7 +186,7 @@ class WatcherTests(unittest.TestCase):
 
             self.git("clone", str(origin), str(updater), cwd=temp)
             self.configure_git(updater)
-            (updater / "microWakeWordsV7" / "santa.marker").write_text(
+            (updater / "microWakeWordsV8" / "santa.marker").write_text(
                 "santa\n", encoding="utf-8"
             )
             self.run_generator(updater)
