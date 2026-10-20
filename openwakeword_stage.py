@@ -24,7 +24,7 @@ from wake_bundle import (
 
 
 OWW_TRAINER_REPOSITORY = "https://github.com/TaterTotterson/openWakeWord-Trainer.git"
-OWW_TRAINER_REVISION = "d4329f76ecf09da7ca8fdf29b32f92f2a7f0d57b"
+OWW_TRAINER_REVISION = "6bba88e0fd2e2e949b9985d6d6974be455e21f65"
 # Retained as public aliases for older callers and tests.
 OWW_BUNDLE_SUFFIX = BUNDLE_SUFFIX
 OWW_METADATA_SUFFIX = ".oww.json"
