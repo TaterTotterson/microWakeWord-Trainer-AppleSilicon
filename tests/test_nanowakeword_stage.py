@@ -34,7 +34,7 @@ class NanoWakeWordStageTests(unittest.TestCase):
             (checkout / "scripts").mkdir(parents=True)
             (checkout / "train_nanowakeword.sh").write_text("#!/bin/sh\n# --positive-tts-dir\n", encoding="utf-8")
             (checkout / "scripts" / "train_nanowakeword.py").write_text(
-                "NWW_POSITIVE_TTS_DIR = True\nquality_target_negative_rate = 0.05\n",
+                "NWW_POSITIVE_TTS_DIR = True\nNWW_FEATURE_DEVICE = 'cpu'\n",
                 encoding="utf-8",
             )
             generated = root / "generated"
@@ -55,6 +55,7 @@ class NanoWakeWordStageTests(unittest.TestCase):
             self.assertEqual(env["NWW_POSITIVE_TTS_DIR"], str(generated.resolve()))
             self.assertEqual(env["NWW_PERSONAL_DIR"], str(personal.resolve()))
             self.assertEqual(env["NWW_NEGATIVE_DIR"], str(negative.resolve()))
+            self.assertEqual(env["NWW_FEATURE_DEVICE"], "cpu")
 
     def test_publish_embeds_metadata_without_a_second_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -82,6 +83,32 @@ class NanoWakeWordStageTests(unittest.TestCase):
             self.assertNotIn("config", variant)
             self.assertNotIn("validation", variant)
             self.assertFalse((trained / "hey_tater.nww.cnn.json").exists())
+
+    def test_publish_rejects_failed_validation_without_replacing_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            trained = root / "trained"
+            staging.mkdir()
+            trained.mkdir()
+            published = trained / "hey_tater.nww.cnn.onnx"
+            published.write_bytes(b"known-good")
+            (staging / "hey_tater.onnx").write_bytes(b"bad-new-model")
+            (staging / "hey_tater.json").write_text(
+                json.dumps({"validation": {"passed": False}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "failed streaming validation"):
+                publish_nanowakeword_artifacts(
+                    staging_dir=staging,
+                    trained_dir=trained,
+                    safe_word="hey_tater",
+                    phrase="hey tater",
+                    architecture="cnn",
+                )
+
+            self.assertEqual(published.read_bytes(), b"known-good")
 
 
 if __name__ == "__main__":

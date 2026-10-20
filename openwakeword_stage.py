@@ -233,6 +233,13 @@ def publish_openwakeword_artifacts(
     if not source_onnx.is_file() or not source_metadata.is_file():
         raise RuntimeError("openWakeWord did not produce its required ONNX and metadata artifacts")
 
+    oww_metadata = _read_json(source_metadata)
+    calibration = oww_metadata.get("calibration")
+    if not isinstance(calibration, dict) or calibration.get("deployment_ready") is not True:
+        raise RuntimeError(
+            "openWakeWord failed deployment calibration; the existing published model was preserved"
+        )
+
     mappings: list[tuple[Path, Path]] = [
         (source_onnx, destination / f"{safe_word}.oww.onnx"),
     ]
@@ -250,7 +257,6 @@ def publish_openwakeword_artifacts(
         shutil.copy2(source, temporary)
         temporary.replace(target)
 
-    oww_metadata = _read_json(source_metadata)
     oww_artifacts = {
         target.suffix.lstrip(".") or target.name: {
             "file": target.name,
@@ -268,9 +274,6 @@ def publish_openwakeword_artifacts(
             "trainer_revision": OWW_TRAINER_REVISION,
         }
     )
-    calibration = oww_metadata.get("calibration")
-    if not isinstance(calibration, dict):
-        calibration = {}
     threshold, patience, confirmation_threshold, confirmation_patience = _oww_runtime_policy(calibration)
     return publish_open_wake_word(
         trained_dir=destination,
