@@ -53,6 +53,7 @@ NANO_PUBLIC_KEYS = (
     "model_sha256", "model_size_bytes", "artifacts",
     "recommended_threshold", "recommended_patience",
     "quality_summary", "validated_existing_candidate", "seed", "loss_bias",
+    "quality_evaluated", "quality_passed", "quality_status",
 )
 
 
@@ -71,10 +72,17 @@ def _select_nano_default(variants: Mapping[str, Any], current: str = "") -> str:
             patience = int(variant.get("recommended_patience", 2))
         except (KeyError, TypeError, ValueError):
             continue
+        quality_status = str(variant.get("quality_status") or "").strip().lower()
+        quality_accepted = float(
+            quality_status in {"", "passed"} and variant.get("quality_passed") is not False
+        )
         preferred = float(recall >= 0.95 and negative_rate <= 0.05)
         utility = recall - negative_rate - 0.01 * patience
         ranked.append(
-            ((preferred, utility, -negative_rate, recall, -patience, float(architecture == "cnn")), str(architecture))
+            (
+                (quality_accepted, preferred, utility, -negative_rate, recall, -patience, float(architecture == "cnn")),
+                str(architecture),
+            )
         )
     if ranked:
         return max(ranked)[1]
@@ -388,6 +396,8 @@ def bundle_catalog_fields(trained_dir: Path, safe_word: str, base_url: str = "")
     nano = bundle.get("nano_wake_word")
     variants = nano.get("variants") if isinstance(nano, dict) and isinstance(nano.get("variants"), dict) else {}
     nano_urls: dict[str, str] = {}
+    nano_quality_status: dict[str, str] = {}
+    nano_quality_passed: dict[str, bool] = {}
     for architecture in ("cnn", "gru"):
         variant = variants.get(architecture)
         if not isinstance(variant, dict):
@@ -395,10 +405,14 @@ def bundle_catalog_fields(trained_dir: Path, safe_word: str, base_url: str = "")
         model_url = url_for(variant.get("model"))
         if model_url:
             nano_urls[architecture] = model_url
+            nano_quality_status[architecture] = str(variant.get("quality_status") or "")
+            nano_quality_passed[architecture] = variant.get("quality_passed") is True
     if nano_urls:
         fields["available_engines"].append("nano_wake_word")
         fields["nanowakeword_models"] = nano_urls
         fields["nanowakeword_architectures"] = list(nano_urls)
         fields["nanowakeword_default_architecture"] = nano.get("default_architecture")
+        fields["nanowakeword_quality_status"] = nano_quality_status
+        fields["nanowakeword_quality_passed"] = nano_quality_passed
     fields["dual_model"] = "micro_wake_word" in fields["available_engines"] and "open_wake_word" in fields["available_engines"]
     return fields
