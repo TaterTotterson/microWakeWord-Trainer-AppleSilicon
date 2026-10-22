@@ -39,6 +39,17 @@ if os.path.exists("reviewed_negative_features/training"):
     config["features"].insert(insert_at, {"features_dir": "reviewed_negative_features", "sampling_weight": 8.0, "penalty_weight": 1.25, "truth": False, "truncation_strategy": "random", "type": "mmap"})
     print("✅ Added reviewed negative features with stronger negative weighting")
 
+# Generated near-miss TTS is useful but less authoritative than reviewed real
+# false wakes, so it receives a deliberately moderate hard-negative weight.
+if os.path.exists("generated_negative_features/training"):
+    insert_at = 1
+    if os.path.exists("personal_augmented_features/training"):
+        insert_at += 1
+    if os.path.exists("reviewed_negative_features/training"):
+        insert_at += 1
+    config["features"].insert(insert_at, {"features_dir": "generated_negative_features", "sampling_weight": 4.0, "penalty_weight": 1.1, "truth": False, "truncation_strategy": "random", "type": "mmap"})
+    print("✅ Added generated near-miss features with moderate hard-negative weighting")
+
 with open("training_parameters.yaml", "w") as f:
     yaml.dump(config, f)
 print("📝 Wrote training_parameters.yaml")

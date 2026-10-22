@@ -50,6 +50,12 @@ class OpenWakeWordStageTests(unittest.TestCase):
             negative = root / "negative"
             personal.mkdir()
             negative.mkdir()
+            generated = root / "generated"
+            background = root / "background"
+            rir = root / "rir"
+            generated.mkdir()
+            background.mkdir()
+            rir.mkdir()
             (personal / "positive.wav").write_bytes(b"positive")
             (negative / "false-wake.wav").write_bytes(b"negative")
 
@@ -60,6 +66,10 @@ class OpenWakeWordStageTests(unittest.TestCase):
                 personal_dir=personal,
                 negative_dir=negative,
                 trained_dir=root / "trained",
+                generated_positive_dir=generated,
+                generated_negative_phrases=["hey later"],
+                background_dirs=[background],
+                rir_dirs=[rir],
                 environ={**os.environ, "TATER_OWW_TRAINER_DIR": str(trainer_root)},
             )
 
@@ -68,6 +78,10 @@ class OpenWakeWordStageTests(unittest.TestCase):
             self.assertEqual(env["OWW_PERSONAL_DIR"], str(personal.resolve()))
             self.assertEqual(env["OWW_NEGATIVE_DIR"], str(negative.resolve()))
             self.assertEqual(env["OWW_EXPORT_DIR"], str(staging))
+            self.assertEqual(env["OWW_POSITIVE_TTS_DIR"], str(generated.resolve()))
+            self.assertIn("hey later", cmd)
+            self.assertIn(str(background.resolve()), cmd)
+            self.assertIn(str(rir.resolve()), cmd)
 
     def test_prepare_uses_mps_and_never_cuda_on_macos(self):
         with tempfile.TemporaryDirectory() as tmp:

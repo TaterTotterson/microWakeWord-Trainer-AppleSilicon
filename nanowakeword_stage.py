@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from wake_bundle import publish_nano_wake_word
 
@@ -108,6 +108,9 @@ def prepare_nanowakeword_stage(
     generated_positive_dir: Path,
     personal_dir: Path,
     negative_dir: Path,
+    generated_negative_phrases: Sequence[str] = (),
+    background_dirs: Sequence[Path] = (),
+    rir_dirs: Sequence[Path] = (),
     environ: Mapping[str, str] | None = None,
     log=lambda _line: None,
 ) -> tuple[list[str], Path, dict[str, str], Path]:
@@ -154,6 +157,13 @@ def prepare_nanowakeword_stage(
         "--negative-dir",
         str(Path(negative_dir).resolve()),
     ]
+    for value in generated_negative_phrases:
+        if str(value).strip():
+            cmd.extend(["--custom-negative-phrase", str(value).strip()])
+    for directory in background_dirs:
+        cmd.extend(["--background-dir", str(Path(directory).resolve())])
+    for directory in rir_dirs:
+        cmd.extend(["--rir-dir", str(Path(directory).resolve())])
     return cmd, trainer_root, env, staging_dir
 
 
@@ -177,7 +187,19 @@ def publish_nanowakeword_artifacts(
     if not isinstance(metadata, dict):
         raise RuntimeError("NanoWakeWord produced invalid metadata")
     validation = metadata.get("validation")
-    if not isinstance(validation, dict) or validation.get("passed") is not True:
+    quality = metadata.get("quality")
+    if isinstance(quality, dict):
+        validation = quality.get("validation")
+        validation_passed = (
+            quality.get("passed") is True
+            and isinstance(validation, dict)
+            and validation.get("passed") is True
+        )
+    else:
+        # Retain compatibility with NanoWakeWord trainer revisions that wrote
+        # the streaming report directly under the legacy validation key.
+        validation_passed = isinstance(validation, dict) and validation.get("passed") is True
+    if not validation_passed:
         raise RuntimeError(
             "NanoWakeWord failed streaming validation; the existing published model was preserved"
         )

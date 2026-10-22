@@ -40,7 +40,9 @@ class NanoWakeWordStageTests(unittest.TestCase):
             generated = root / "generated"
             personal = root / "personal"
             negative = root / "negative"
-            for directory in (generated, personal, negative):
+            background = root / "background"
+            rir = root / "rir"
+            for directory in (generated, personal, negative, background, rir):
                 directory.mkdir()
             (generated / "tts.wav").write_bytes(b"wav")
 
@@ -48,6 +50,8 @@ class NanoWakeWordStageTests(unittest.TestCase):
                 phrase="hey tater", safe_word="hey_tater", architecture="cnn",
                 data_dir=root / "data", generated_positive_dir=generated,
                 personal_dir=personal, negative_dir=negative,
+                generated_negative_phrases=["hey later"],
+                background_dirs=[background], rir_dirs=[rir],
                 environ={"TATER_NWW_TRAINER_DIR": str(checkout)},
             )
             self.assertEqual(cwd, checkout.resolve())
@@ -56,6 +60,9 @@ class NanoWakeWordStageTests(unittest.TestCase):
             self.assertEqual(env["NWW_PERSONAL_DIR"], str(personal.resolve()))
             self.assertEqual(env["NWW_NEGATIVE_DIR"], str(negative.resolve()))
             self.assertEqual(env["NWW_FEATURE_DEVICE"], "cpu")
+            self.assertIn("hey later", cmd)
+            self.assertIn(str(background.resolve()), cmd)
+            self.assertIn(str(rir.resolve()), cmd)
 
     def test_publish_embeds_metadata_without_a_second_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -83,6 +90,41 @@ class NanoWakeWordStageTests(unittest.TestCase):
             self.assertNotIn("config", variant)
             self.assertNotIn("validation", variant)
             self.assertFalse((trained / "hey_tater.nww.cnn.json").exists())
+
+    def test_publish_accepts_nested_quality_report_from_pinned_trainer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            trained = root / "trained"
+            staging.mkdir()
+            (staging / "hey_tater.onnx").write_bytes(b"cnn")
+            (staging / "hey_tater.json").write_text(
+                json.dumps(
+                    {
+                        "quality": {
+                            "passed": True,
+                            "validation": {"passed": True},
+                            "failures": [],
+                        },
+                        "recommended_threshold": 0.99,
+                        "recommended_patience": 4,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            bundle_path = publish_nanowakeword_artifacts(
+                staging_dir=staging,
+                trained_dir=trained,
+                safe_word="hey_tater",
+                phrase="hey tater",
+                architecture="cnn",
+            )
+
+            variant = json.loads(bundle_path.read_text(encoding="utf-8"))["nano_wake_word"]["variants"]["cnn"]
+            self.assertEqual((trained / "hey_tater.nww.cnn.onnx").read_bytes(), b"cnn")
+            self.assertEqual(variant["recommended_threshold"], 0.99)
+            self.assertEqual(variant["recommended_patience"], 4)
 
     def test_publish_rejects_failed_validation_without_replacing_model(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

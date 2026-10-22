@@ -589,14 +589,29 @@ compute_reviewed_negative_cache_key() {
   } | shasum -a 256 | awk '{print $1}'
 }
 
+compute_generated_negative_cache_key() {
+  if ! dir_has_matching_files "generated_negative_samples/combined" "*.wav"; then
+    echo "none"
+    return
+  fi
+  {
+    if [[ -f "generated_negative_samples/.generation_manifest.json" ]]; then
+      shasum -a 256 "generated_negative_samples/.generation_manifest.json"
+    fi
+    find "generated_negative_samples/combined" -type f -name '*.wav' -exec stat -f 'generated_negative=%N:%m:%z' {} \; | sort
+  } | shasum -a 256 | awk '{print $1}'
+}
+
 compute_feature_cache_key() {
   local sample_key="$1"
   local personal_key="$2"
   local reviewed_negative_key="$3"
+  local generated_negative_key="$4"
   {
     printf 'sample_key=%s\n' "$sample_key"
     printf 'personal_key=%s\n' "$personal_key"
     printf 'reviewed_negative_key=%s\n' "$reviewed_negative_key"
+    printf 'generated_negative_key=%s\n' "$generated_negative_key"
     stat -f 'feature_script=%N:%m:%z' "$SOURCE_DIR/scripts_macos/make_features.py"
     for dataset_dir in mit_rirs audioset_16k fma_16k chime_16k; do
       printf '%s=%s\n' "$dataset_dir" "$(count_matching_files "$dataset_dir" '*.wav')"
@@ -609,6 +624,7 @@ SAMPLE_CACHE_STAMP_FILE="generated_samples/.cache_stamp"
 FEATURE_CACHE_KEY_FILE="generated_augmented_features/.cache_key"
 PERSONAL_FEATURE_CACHE_KEY_FILE="personal_augmented_features/.cache_key"
 REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE="reviewed_negative_features/.cache_key"
+GENERATED_NEGATIVE_FEATURE_CACHE_KEY_FILE="generated_negative_features/.cache_key"
 SAMPLE_CACHE_KEY="$(compute_sample_cache_key)"
 
 # ── (A) clean previous run artifacts that must always be rebuilt ─────────────
@@ -693,16 +709,42 @@ if [[ "$sample_cache_hit" != "true" ]]; then
   write_cache_key "$SAMPLE_CACHE_STAMP_FILE" "${SAMPLE_CACHE_KEY}:$(date +%s)"
 fi
 
-if [[ "${MWW_GENERATE_ONLY:-0}" == "1" ]]; then
-  echo "✅ Shared positive TTS corpus is ready; model training was not requested."
-  exit 0
-fi
-
-# ── (C) pull/prepare augmentation datasets (RIR, Audioset, FMA) ──────────────
+# ── (C) pull/prepare shared augmentation datasets ────────────────────────────
+# OWW and NWW reuse these raw environmental recordings and room responses even
+# when the microWakeWord model itself was not selected.
 echo "📚 Preparing augmentation datasets (MIT RIR, AudioSet, FMA, CHiME)…"
 "$PY" "$SOURCE_DIR/scripts_macos/prepare_datasets.py"
 
-# ── (D) trim silence from personal samples, if any exists
+if [[ "${MWW_GENERATE_ONLY:-0}" == "1" ]]; then
+  echo "✅ Shared positive TTS and augmentation corpora are ready; microWakeWord training was not requested."
+  exit 0
+fi
+
+# ── (D) synthesize optional near-miss phrases for MicroWakeWord ─────────────
+# These stay separate from reviewed real-world negatives so the latter can keep
+# a stronger training weight. The helper reuses its corpus when the phrase and
+# voice configuration are unchanged.
+generated_negative_cmd=(
+  "$PY"
+  "$SOURCE_DIR/scripts_macos/generate_negative_tts.py"
+  "--phrases-json" "${MWW_GENERATED_NEGATIVE_PHRASES_JSON:-[]}"
+  "--target-phrase" "$TARGET_WORD"
+  "--root-dir" "generated_negative_samples"
+  "--generator-script" "$SOURCE_DIR/scripts_macos/tts_generate_samples.py"
+  "--data-dir" "$WORK_DIR"
+  "--language" "$LANGUAGE"
+  "--english-accent" "$ENGLISH_ACCENT"
+  "--tts-mode" "$TTS_MODE"
+  "--batch-size" "$BATCH_SIZE"
+  "--voice-count" "$TTS_VOICE_COUNT"
+  "--ffmpeg" "$FFMPEG_BIN"
+)
+for model_path in "${PIPER_MODELS[@]}"; do
+  generated_negative_cmd+=("--piper-model" "$model_path")
+done
+"${generated_negative_cmd[@]}"
+
+# ── (E) trim silence from personal samples, if any exists
 if dir_has_matching_files "personal_samples" "*.wav"; then
   echo "✂️ Trimming silence from personal samples…"
   "$PY" "$SOURCE_DIR/scripts_macos/trim_silence.py"
@@ -710,15 +752,17 @@ else
   echo "ℹ️ No personal samples uploaded; skipping silence trimming."
 fi
 
-# ── (E) build augmenter + spectrogram feature mmaps ───────────────────────────
+# ── (F) build augmenter + spectrogram feature mmaps ───────────────────────────
 PERSONAL_CACHE_KEY="$(compute_personal_cache_key)"
 REVIEWED_NEGATIVE_CACHE_KEY="$(compute_reviewed_negative_cache_key)"
+GENERATED_NEGATIVE_CACHE_KEY="$(compute_generated_negative_cache_key)"
 SAMPLE_CACHE_STAMP="$(read_cache_key "$SAMPLE_CACHE_STAMP_FILE")"
-FEATURE_CACHE_KEY="$(compute_feature_cache_key "${SAMPLE_CACHE_KEY}:${SAMPLE_CACHE_STAMP}" "$PERSONAL_CACHE_KEY" "$REVIEWED_NEGATIVE_CACHE_KEY")"
+FEATURE_CACHE_KEY="$(compute_feature_cache_key "${SAMPLE_CACHE_KEY}:${SAMPLE_CACHE_STAMP}" "$PERSONAL_CACHE_KEY" "$REVIEWED_NEGATIVE_CACHE_KEY" "$GENERATED_NEGATIVE_CACHE_KEY")"
 feature_cache_hit=false
 cached_feature_key="$(read_cache_key "$FEATURE_CACHE_KEY_FILE")"
 cached_personal_feature_key="$(read_cache_key "$PERSONAL_FEATURE_CACHE_KEY_FILE")"
 cached_reviewed_negative_feature_key="$(read_cache_key "$REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE")"
+cached_generated_negative_feature_key="$(read_cache_key "$GENERATED_NEGATIVE_FEATURE_CACHE_KEY_FILE")"
 
 if features_dir_ready "generated_augmented_features" && [[ -n "$cached_feature_key" && "$cached_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
   personal_feature_cache_ok=false
@@ -743,17 +787,28 @@ if features_dir_ready "generated_augmented_features" && [[ -n "$cached_feature_k
     reviewed_negative_feature_cache_ok=true
   fi
 
-  if [[ "$personal_feature_cache_ok" == "true" && "$reviewed_negative_feature_cache_ok" == "true" ]]; then
+  generated_negative_feature_cache_ok=false
+  if [[ "$GENERATED_NEGATIVE_CACHE_KEY" == "none" ]]; then
+    generated_negative_feature_cache_ok=true
+    if [[ -d "generated_negative_features" ]]; then
+      echo "♻️ Removing stale generated hard-negative feature cache (no phrases selected)."
+      rm -rf generated_negative_features
+    fi
+  elif features_dir_ready "generated_negative_features" && [[ -n "$cached_generated_negative_feature_key" && "$cached_generated_negative_feature_key" == "$FEATURE_CACHE_KEY" ]]; then
+    generated_negative_feature_cache_ok=true
+  fi
+
+  if [[ "$personal_feature_cache_ok" == "true" && "$reviewed_negative_feature_cache_ok" == "true" && "$generated_negative_feature_cache_ok" == "true" ]]; then
     feature_cache_hit=true
   fi
 fi
 
 if [[ "$feature_cache_hit" == "true" ]]; then
-  echo "✅ Reusing augmented feature caches for the current wake word, personal samples, and reviewed negatives."
+  echo "✅ Reusing augmented feature caches for the current wake word, personal samples, and hard negatives."
 else
-  if [[ -d "generated_augmented_features" || -d "personal_augmented_features" || -d "reviewed_negative_features" ]]; then
+  if [[ -d "generated_augmented_features" || -d "personal_augmented_features" || -d "reviewed_negative_features" || -d "generated_negative_features" ]]; then
     echo "♻️ Feature cache changed; rebuilding augmented features."
-    rm -rf generated_augmented_features personal_augmented_features reviewed_negative_features
+    rm -rf generated_augmented_features personal_augmented_features reviewed_negative_features generated_negative_features
   fi
   echo "🧪 Building augmented feature sets…"
   "$PY" "$SOURCE_DIR/scripts_macos/make_features.py"
@@ -764,17 +819,20 @@ else
   if [[ "$REVIEWED_NEGATIVE_CACHE_KEY" != "none" && -d "reviewed_negative_features" ]]; then
     write_cache_key "$REVIEWED_NEGATIVE_FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
   fi
+  if [[ "$GENERATED_NEGATIVE_CACHE_KEY" != "none" && -d "generated_negative_features" ]]; then
+    write_cache_key "$GENERATED_NEGATIVE_FEATURE_CACHE_KEY_FILE" "$FEATURE_CACHE_KEY"
+  fi
 fi
 
-# ── (F) download precomputed negative spectrograms ────────────────────────────
+# ── (G) download precomputed negative spectrograms ────────────────────────────
 echo "⬇️ Fetching negative datasets…"
 "$PY" "$SOURCE_DIR/scripts_macos/fetch_negatives.py"
 
-# ── (G) write training YAML (tuned for your notebook) ────────────────────────
+# ── (H) write training YAML (tuned for your notebook) ────────────────────────
 echo "📝 Writing training config…"
 "$PY" "$SOURCE_DIR/scripts_macos/write_training_yaml.py"
 
-# ── (H) train + export (Metal TF) ────────────────────────────────────────────
+# ── (I) train + export (Metal TF) ────────────────────────────────────────────
 echo "🏋️ Starting model training and TFLite export (this is the longest stage)…"
 echo "🧠 Model quality: high_accuracy_plus"
 "$PY" -m microwakeword.model_train_eval \
@@ -796,7 +854,7 @@ echo "🧠 Model quality: high_accuracy_plus"
   --first_conv_kernel_size 5 \
   --stride 2
 
-# ── (I) calibrate detector metadata ────────────────────────────────────────────
+# ── (J) calibrate detector metadata ────────────────────────────────────────────
 CALIBRATION_JSON="trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
 echo "🎯 Calibrating detector settings for on-device use…"
 if "$PY" "$SOURCE_DIR/scripts_macos/calibrate_detector.py" \

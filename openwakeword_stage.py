@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from wake_bundle import (
     BUNDLE_SUFFIX,
@@ -109,6 +109,10 @@ def prepare_openwakeword_stage(
     personal_dir: Path,
     negative_dir: Path,
     trained_dir: Path,
+    generated_positive_dir: Path | None = None,
+    generated_negative_phrases: Sequence[str] = (),
+    background_dirs: Sequence[Path] = (),
+    rir_dirs: Sequence[Path] = (),
     environ: Mapping[str, str] | None = None,
     log=lambda _line: None,
 ) -> tuple[list[str], Path, dict[str, str], Path]:
@@ -169,6 +173,17 @@ def prepare_openwakeword_stage(
         "--data-dir",
         str(oww_root / "assets"),
     ]
+    if generated_positive_dir is not None:
+        generated = str(Path(generated_positive_dir).resolve())
+        env["OWW_POSITIVE_TTS_DIR"] = generated
+        cmd.extend(["--positive-tts-dir", generated])
+    for value in generated_negative_phrases:
+        if str(value).strip():
+            cmd.extend(["--custom-negative-phrase", str(value).strip()])
+    for directory in background_dirs:
+        cmd.extend(["--background-dir", str(Path(directory).resolve())])
+    for directory in rir_dirs:
+        cmd.extend(["--rir-dir", str(Path(directory).resolve())])
     if normalize_train_openwakeword(env.get("OWW_FORCE_CPU"), default=False):
         cmd.append("--force-cpu")
     if any(Path(personal_dir).glob("*.wav")) and any(Path(negative_dir).glob("*.wav")):

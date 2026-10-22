@@ -1,5 +1,5 @@
-- Added selectable MicroWakeWord, openWakeWord, NanoWakeWord CNN, and NanoWakeWord GRU training, including training every selected model in one run.
-- Added one canonical Tater wake bundle that can carry any trained model combination while retaining the separate MicroWakeWord-only ESPHome manifest.
-- Pinned NanoWakeWord training to Tater's tested helper revision with shared TTS, personal positive/negative samples, streaming validation, calibrated runtime policy, and corrective retry support.
-- Reused the same-phrase modern TTS corpus across app updates while still rebuilding stale negative and feature caches when their inputs change.
-- Removed local paths and bulky training diagnostics from published bundles and pruned obsolete companion metadata and DNN artifacts.
+- Improved openWakeWord and NanoWakeWord training by sharing the same four-engine positive TTS corpus, personal recordings, reviewed negatives, backgrounds, and room responses used by the trainer pipeline.
+- Added optional generated hard-negative phrases for MicroWakeWord, openWakeWord, and NanoWakeWord, with reusable caches and balanced weighting that keeps reviewed real-world false wakes strongest.
+- Added a polished Hard Negative Training section to manual and automatic training so similar-sounding phrases can be entered once and applied to every selected engine.
+- Added an end-of-run quality summary for every selected model, including recall, false accepts or false triggers, runtime tuning, and clear Excellent, Good, Needs attention, Failed, or Not completed ratings.
+- Improved failure handling so unsuccessful quality validation is reported clearly while the previously published working model remains untouched.

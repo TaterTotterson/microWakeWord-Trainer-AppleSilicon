@@ -74,6 +74,24 @@ if os.path.exists("./negative_samples") and any(Path("./negative_samples").glob(
 else:
     print("ℹ️ No reviewed negative samples found; continuing with stock negative datasets only")
 
+# Process generated near-miss phrases as a separately weighted hard-negative
+# source. Keeping this corpus separate lets reviewed real-world false wakes
+# retain their stronger weight in the training configuration.
+clips_generated_negative = None
+generated_negative_dir = Path("./generated_negative_samples/combined")
+if generated_negative_dir.exists() and any(generated_negative_dir.glob("*.wav")):
+    clips_generated_negative = Clips(
+        input_directory=str(generated_negative_dir),
+        file_pattern="*.wav",
+        max_clip_duration_s=5,
+        remove_silence=True,
+        random_split_seed=10,
+        split_count=0.1,
+    )
+    print("✅ Found generated near-miss samples, will create a separate hard-negative feature set")
+else:
+    print("ℹ️ No generated near-miss samples selected")
+
 augmenter = Augmentation(
     augmentation_duration_s=3.2,
     augmentation_probabilities={
@@ -158,6 +176,30 @@ if clips_reviewed_negative is not None:
         print("⏳ Building reviewed negative spectrogram mmap; first progress update can take a moment…")
         spectros = SpectrogramGeneration(
             clips=clips_reviewed_negative,
+            augmenter=augmenter,
+            slide_frames=cfg["slide_frames"],
+            step_ms=10,
+        )
+        RaggedMmap.from_generator(
+            out_dir=str(out_dir / "wakeword_mmap"),
+            sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
+            batch_size=100,
+            verbose=True,
+        )
+
+# Process generated near-miss samples if available. Clips creates deterministic
+# training/validation/testing partitions, so quality evaluation never reuses
+# the exact generated utterances seen during optimization.
+if clips_generated_negative is not None:
+    out_root_generated_negative = Path("generated_negative_features")
+    out_root_generated_negative.mkdir(exist_ok=True)
+    for split, cfg in split_cfg.items():
+        out_dir = out_root_generated_negative / split
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"🧪 Processing {split} (generated hard negatives) …")
+        print("⏳ Building generated hard-negative spectrogram mmap; first progress update can take a moment…")
+        spectros = SpectrogramGeneration(
+            clips=clips_generated_negative,
             augmenter=augmenter,
             slide_frames=cfg["slide_frames"],
             step_ms=10,
