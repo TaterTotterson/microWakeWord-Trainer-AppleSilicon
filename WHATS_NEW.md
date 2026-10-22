@@ -1,5 +1,5 @@
-- Improved openWakeWord and NanoWakeWord training by sharing the same four-engine positive TTS corpus, personal recordings, reviewed negatives, backgrounds, and room responses used by the trainer pipeline.
-- Added optional generated hard-negative phrases for MicroWakeWord, openWakeWord, and NanoWakeWord, with reusable caches and balanced weighting that keeps reviewed real-world false wakes strongest.
-- Added a polished Hard Negative Training section to manual and automatic training so similar-sounding phrases can be entered once and applied to every selected engine.
-- Added an end-of-run quality summary for every selected model, including recall, false accepts or false triggers, runtime tuning, and clear Excellent, Good, Needs attention, Failed, or Not completed ratings.
-- Improved failure handling so unsuccessful quality validation is reported clearly while the previously published working model remains untouched.
+- Improved NanoWakeWord CNN and GRU training with stronger hard-negative weighting, stable unseen holdouts, larger quality checks, and corrective retries based on real gate failures.
+- Added automatic threshold and detection-window calibration from patience 2 through 5, allowing responsive models to use shorter windows while retaining a safe fallback for difficult wake words.
+- Added one checksummed broad negative feature bank shared by openWakeWord and NanoWakeWord, including NanoWakeWord-only runs.
+- Added no-retrain NanoWakeWord candidate revalidation and clear reporting when the previously published model remains active after a rejected candidate.
+- Improved default-model selection to use measured recall, negative-trigger rate, and calibrated patience instead of always preferring CNN.
