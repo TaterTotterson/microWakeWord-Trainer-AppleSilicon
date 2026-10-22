@@ -381,6 +381,7 @@ def _managed_data_registry() -> List[Dict[str, Any]]:
         {"id": "training_workspace", "label": "Model training workspace", "category": "Training results", "description": "Checkpoints, logs, and intermediate files from the latest model run.", "paths": [DATA_DIR / "trained_models"], "rebuild_note": rebuild},
         {"id": "openwakeword_workspace", "label": "openWakeWord training cache", "category": "Training results", "description": "Pinned trainer source, generated clips, dependencies, and intermediate files for the companion model.", "paths": [DATA_DIR / "openwakeword", DATA_DIR / "tools" / "openwakeword-trainer"], "rebuild_note": redownload},
         {"id": "nanowakeword_workspace", "label": "NanoWakeWord training cache", "category": "Training results", "description": "Trainer source, validation audio, dependencies, features, and intermediate CNN/GRU files.", "paths": [DATA_DIR / "nanowakeword", DATA_DIR / "tools" / "nanowakeword-trainer"], "rebuild_note": redownload},
+        {"id": "shared_feature_bank", "label": "Shared OWW/NWW negative feature bank", "category": "Downloaded training datasets", "description": "Checksummed broad negative features shared by openWakeWord and NanoWakeWord.", "paths": [DATA_DIR / "shared_feature_banks"], "rebuild_note": redownload},
         {"id": "published_models", "label": "Published wake-word models", "category": "Training results", "description": "Finished MWW/OWW models and manifests shown in Wake Words.", "paths": [TRAINED_WAKE_WORDS_DIR], "rebuild_note": "Tater links to these files will stop working. Train again to recreate them."},
         {"id": "training_log", "label": "Training console log", "category": "Training results", "description": "Saved console output from the most recent training run.", "paths": [DATA_DIR / "recorder_training.log"], "rebuild_note": "The deleted history cannot be restored; the next run creates a new log."},
 
@@ -2000,6 +2001,7 @@ def _run_openwakeword_only_background(
         STATE["training"]["safe_word"] = safe_word
         STATE["training"]["summary"] = None
         STATE["training"]["log_path"] = str(log_path)
+    log_path.write_text("", encoding="utf-8")
     _append_train_log(
         "→ Retrying openWakeWord only; the completed microWakeWord model will not be rebuilt or replaced"
     )
@@ -2054,6 +2056,85 @@ def _start_openwakeword_only_thread(
     with TRAINING_RUNTIME_LOCK:
         if TRAINING_SHUTDOWN_EVENT.is_set():
             raise RuntimeError("WakeWord Trainer is shutting down.")
+        if TRAINING_THREAD is not None and TRAINING_THREAD.is_alive():
+            raise RuntimeError("Training is already running.")
+        TRAINING_STOP_EVENT.clear()
+        TRAINING_THREAD = thread
+    try:
+        thread.start()
+    except Exception:
+        with TRAINING_RUNTIME_LOCK:
+            if TRAINING_THREAD is thread:
+                TRAINING_THREAD = None
+        raise
+    return thread
+
+
+def _run_nanowakeword_validation_background(
+    safe_word: str,
+    phrase: str,
+    architecture: str,
+    training_lock,
+) -> None:
+    """Revalidate and publish an existing NWW candidate without retraining it."""
+    global TRAINING_THREAD
+    rc = 999
+    log_path = DATA_DIR / "recorder_training.log"
+    with STATE_LOCK:
+        STATE["training"].update(
+            {"running": True, "exit_code": None, "log_lines": [], "safe_word": safe_word,
+             "summary": None, "log_path": str(log_path)}
+        )
+    log_path.write_text("", encoding="utf-8")
+    _append_train_log(
+        f"→ Revalidating existing NanoWakeWord {architecture.upper()} candidate without retraining"
+    )
+    try:
+        rc = _run_nanowakeword_training(
+            phrase=phrase,
+            safe_word=safe_word,
+            architecture=architecture,
+            log_path=log_path,
+            validate_existing=True,
+        )
+        with STATE_LOCK:
+            STATE["training"]["exit_code"] = rc
+    except Exception as exc:
+        _append_train_log(f"✗ NanoWakeWord candidate revalidation crashed: {exc!r}")
+        with STATE_LOCK:
+            STATE["training"]["exit_code"] = 999
+    finally:
+        _record_training_summary(
+            log_path=log_path,
+            safe_word=safe_word,
+            phrase=phrase,
+            selected_models=[f"nano_{architecture}"],
+            outcomes={f"nano_{architecture}": rc},
+        )
+        with TRAINING_RUNTIME_LOCK:
+            if TRAINING_THREAD is threading.current_thread():
+                TRAINING_THREAD = None
+        with STATE_LOCK:
+            STATE["training"]["running"] = False
+        _release_training_run_lock(training_lock)
+        if not TRAINING_SHUTDOWN_EVENT.is_set():
+            TRAINING_STOP_EVENT.clear()
+
+
+def _start_nanowakeword_validation_thread(
+    safe_word: str,
+    phrase: str,
+    architecture: str,
+    training_lock,
+) -> threading.Thread:
+    global TRAINING_THREAD
+    thread = threading.Thread(
+        target=_run_nanowakeword_validation_background,
+        args=(safe_word, phrase, architecture, training_lock),
+        daemon=True,
+        name=f"nanowakeword-{architecture}-validation",
+    )
+    with TRAINING_RUNTIME_LOCK:
         if TRAINING_THREAD is not None and TRAINING_THREAD.is_alive():
             raise RuntimeError("Training is already running.")
         TRAINING_STOP_EVENT.clear()
@@ -3384,6 +3465,7 @@ def _run_nanowakeword_training(
     architecture: str,
     log_path: Path,
     generated_negative_phrases: list[str] | None = None,
+    validate_existing: bool = False,
 ) -> int:
     """Train and atomically publish one NanoWakeWord architecture."""
     global TRAINING_PROCESS
@@ -3404,9 +3486,11 @@ def _run_nanowakeword_training(
         ],
         rir_dirs=[DATA_DIR / "mit_rirs"],
         log=_append_train_log,
+        validate_existing=validate_existing,
     )
     _append_train_log("")
-    _append_train_log(f"===== NanoWakeWord {architecture.upper()} model =====")
+    action = "candidate revalidation" if validate_existing else "model"
+    _append_train_log(f"===== NanoWakeWord {architecture.upper()} {action} =====")
     _append_train_log(f"→ Running: {' '.join(cmd)}")
     proc: subprocess.Popen | None = None
     try:
@@ -4663,6 +4747,46 @@ def train_openwakeword_only(payload: Dict[str, Any] = None):
         "safe_word": safe_word,
         "phrase": phrase,
     }
+
+
+@app.post("/api/revalidate_nanowakeword")
+def revalidate_nanowakeword(payload: Dict[str, Any] = None):
+    """Quality-test and publish an existing CNN/GRU candidate without training."""
+    payload = payload or {}
+    architecture = str(payload.get("architecture") or "cnn").strip().lower()
+    if architecture not in {"cnn", "gru"}:
+        return JSONResponse({"ok": False, "error": "architecture must be cnn or gru"}, status_code=400)
+    with STATE_LOCK:
+        active_safe_word = str(STATE.get("safe_word") or "").strip()
+        raw_phrase = str(STATE.get("raw_phrase") or "").strip()
+        if STATE["training"]["running"]:
+            return JSONResponse({"ok": False, "error": "Training already running"}, status_code=400)
+    safe_word = safe_name(str(payload.get("safe_word") or active_safe_word))
+    candidate_root = DATA_DIR / "nanowakeword" / "output" / architecture / safe_word
+    if not any(candidate_root.rglob("*.onnx")):
+        return JSONResponse(
+            {"ok": False, "error": f"No existing NanoWakeWord {architecture.upper()} candidate found."},
+            status_code=404,
+        )
+    bundle = load_bundle(TRAINED_WAKE_WORDS_DIR, safe_word)
+    phrase = str(bundle.get("wake_word") or raw_phrase or safe_word.replace("_", " ")).strip()
+    with DATA_MANAGEMENT_LOCK:
+        try:
+            training_lock = _try_acquire_training_run_lock()
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"Could not acquire the training lock: {exc}"}, status_code=500)
+        if training_lock is None:
+            return JSONResponse({"ok": False, "error": "Training is already running in another trainer process."}, status_code=409)
+        with STATE_LOCK:
+            STATE["training"]["running"] = True
+    try:
+        _start_nanowakeword_validation_thread(safe_word, phrase, architecture, training_lock)
+    except Exception as exc:
+        with STATE_LOCK:
+            STATE["training"]["running"] = False
+        _release_training_run_lock(training_lock)
+        return JSONResponse({"ok": False, "error": f"Could not start validation: {exc}"}, status_code=500)
+    return {"ok": True, "started": True, "architecture": architecture, "safe_word": safe_word}
 
 
 @app.post("/api/reset_recordings")

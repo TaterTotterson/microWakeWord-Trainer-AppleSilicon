@@ -50,7 +50,35 @@ NANO_PUBLIC_KEYS = (
     "hard_negative_samples", "quality_retries_used", "model",
     "model_sha256", "model_size_bytes", "artifacts",
     "recommended_threshold", "recommended_patience",
+    "quality_summary", "validated_existing_candidate", "seed", "loss_bias",
 )
+
+
+def _select_nano_default(variants: Mapping[str, Any], current: str = "") -> str:
+    """Choose the safest high-recall validated variant with a latency penalty."""
+    ranked: list[tuple[tuple[float, ...], str]] = []
+    for architecture, variant in variants.items():
+        if not isinstance(variant, Mapping):
+            continue
+        summary = variant.get("quality_summary")
+        if not isinstance(summary, Mapping):
+            continue
+        try:
+            recall = float(summary["recall"])
+            negative_rate = float(summary["negative_rate"])
+            patience = int(variant.get("recommended_patience", 2))
+        except (KeyError, TypeError, ValueError):
+            continue
+        preferred = float(recall >= 0.95 and negative_rate <= 0.05)
+        utility = recall - negative_rate - 0.01 * patience
+        ranked.append(
+            ((preferred, utility, -negative_rate, recall, -patience, float(architecture == "cnn")), str(architecture))
+        )
+    if ranked:
+        return max(ranked)[1]
+    if current in variants:
+        return current
+    return "cnn" if "cnn" in variants else next(iter(variants), "")
 
 
 def sha256_file(path: Path) -> str:
@@ -277,8 +305,9 @@ def publish_nano_wake_word(
     }
     variants[architecture] = variant
     nano["variants"] = variants
-    if str(nano.get("default_architecture") or "") not in variants:
-        nano["default_architecture"] = "cnn" if "cnn" in variants else architecture
+    nano["default_architecture"] = _select_nano_default(
+        variants, str(nano.get("default_architecture") or "")
+    )
     bundle["nano_wake_word"] = nano
     path = _atomic_write(bundle_path(trained_dir, safe_word), bundle)
     prune_unreferenced_companion_artifacts(trained_dir, safe_word, bundle)

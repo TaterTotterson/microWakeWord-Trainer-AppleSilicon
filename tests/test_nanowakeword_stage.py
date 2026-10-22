@@ -2,11 +2,27 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from nanowakeword_stage import prepare_nanowakeword_stage, publish_nanowakeword_artifacts
 
 
 class NanoWakeWordStageTests(unittest.TestCase):
+    def setUp(self):
+        self.bank_patch = patch(
+            "nanowakeword_stage.ensure_shared_negative_feature_bank",
+            side_effect=lambda data_dir, **_kwargs: Path(data_dir) / "shared_feature_banks" / "bank.npy",
+        )
+        self.bank_patch.start()
+        self.addCleanup(self.bank_patch.stop)
+
+    @staticmethod
+    def write_contract(root: Path) -> None:
+        (root / "trainer_contract.json").write_text(json.dumps({
+            "api_version": 2,
+            "capabilities": ["shared-positive-tts", "multiple-background-dirs", "multiple-rir-dirs", "shared-negative-feature-bank", "quality-patience-5", "validate-existing-candidate"],
+        }), encoding="utf-8")
+
     def test_stale_checkout_without_shared_tts_support_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             checkout = Path(temporary)
@@ -37,6 +53,7 @@ class NanoWakeWordStageTests(unittest.TestCase):
                 "NWW_POSITIVE_TTS_DIR = True\nNWW_FEATURE_DEVICE = 'cpu'\n",
                 encoding="utf-8",
             )
+            self.write_contract(checkout)
             generated = root / "generated"
             personal = root / "personal"
             negative = root / "negative"
@@ -60,9 +77,20 @@ class NanoWakeWordStageTests(unittest.TestCase):
             self.assertEqual(env["NWW_PERSONAL_DIR"], str(personal.resolve()))
             self.assertEqual(env["NWW_NEGATIVE_DIR"], str(negative.resolve()))
             self.assertEqual(env["NWW_FEATURE_DEVICE"], "cpu")
+            self.assertEqual(env["NWW_REQUIRE_BROAD_FEATURE_BANK"], "1")
+            self.assertIn("shared_feature_banks", env["NWW_FEATURE_BANK_DIR"])
             self.assertIn("hey later", cmd)
             self.assertIn(str(background.resolve()), cmd)
             self.assertIn(str(rir.resolve()), cmd)
+
+            validate_cmd, *_ = prepare_nanowakeword_stage(
+                phrase="hey tater", safe_word="hey_tater", architecture="cnn",
+                data_dir=root / "data", generated_positive_dir=generated,
+                personal_dir=personal, negative_dir=negative,
+                environ={"TATER_NWW_TRAINER_DIR": str(checkout)},
+                validate_existing=True,
+            )
+            self.assertIn("--validate-existing-candidate", validate_cmd)
 
     def test_publish_embeds_metadata_without_a_second_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

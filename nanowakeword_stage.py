@@ -11,12 +11,24 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from wake_bundle import publish_nano_wake_word
+from shared_feature_bank import (
+    FEATURE_BANK_FILENAME,
+    ensure_shared_negative_feature_bank,
+)
 
 
 NWW_TRAINER_REPOSITORY = "https://github.com/TaterTotterson/nanoWakeWord-Trainer.git"
-NWW_TRAINER_REVISION = "30cad9c1947f1a6e894b6d716e543603fa360522"
+NWW_TRAINER_REVISION = "9552c9b9e71c864591b7b3660c8d1654cec83aea"
 NWW_ARCHITECTURES = ("cnn", "gru")
-NWW_TRAINER_COMPATIBILITY_MARKER = "NWW_FEATURE_DEVICE"
+NWW_TRAINER_API_VERSION = 2
+NWW_TRAINER_CAPABILITIES = {
+    "shared-positive-tts",
+    "multiple-background-dirs",
+    "multiple-rir-dirs",
+    "shared-negative-feature-bank",
+    "quality-patience-5",
+    "validate-existing-candidate",
+}
 
 
 def normalize_train_nanowakeword(value: Any, default: bool = False) -> bool:
@@ -33,13 +45,13 @@ def _valid_trainer_root(path: Path) -> bool:
     if not launcher.is_file() or not trainer.is_file():
         return False
     try:
-        trainer_source = trainer.read_text(encoding="utf-8")
+        contract = json.loads((path / "trainer_contract.json").read_text(encoding="utf-8"))
+        capabilities = set(contract.get("capabilities") or [])
         return (
-            "--positive-tts-dir" in launcher.read_text(encoding="utf-8")
-            and "NWW_POSITIVE_TTS_DIR" in trainer_source
-            and NWW_TRAINER_COMPATIBILITY_MARKER in trainer_source
+            int(contract.get("api_version") or 0) >= NWW_TRAINER_API_VERSION
+            and NWW_TRAINER_CAPABILITIES <= capabilities
         )
-    except OSError:
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
 
 
@@ -113,6 +125,7 @@ def prepare_nanowakeword_stage(
     rir_dirs: Sequence[Path] = (),
     environ: Mapping[str, str] | None = None,
     log=lambda _line: None,
+    validate_existing: bool = False,
 ) -> tuple[list[str], Path, dict[str, str], Path]:
     architecture = str(architecture).strip().lower()
     if architecture not in NWW_ARCHITECTURES:
@@ -124,6 +137,14 @@ def prepare_nanowakeword_stage(
     env = dict(os.environ if environ is None else environ)
     trainer_root = ensure_nanowakeword_trainer(data_dir, environ=env, log=log)
     nww_root = Path(data_dir).resolve() / "nanowakeword"
+    feature_bank = ensure_shared_negative_feature_bank(
+        data_dir,
+        legacy_candidates=(
+            Path(data_dir).resolve() / "openwakeword" / "assets" / FEATURE_BANK_FILENAME,
+            nww_root / "feature_banks" / FEATURE_BANK_FILENAME,
+        ),
+        log=log,
+    )
     staging_dir = nww_root / "publish-staging" / safe_word / architecture
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
@@ -138,6 +159,8 @@ def prepare_nanowakeword_stage(
             "NWW_POSITIVE_TTS_DIR": str(generated),
             "NWW_PERSONAL_DIR": str(Path(personal_dir).resolve()),
             "NWW_NEGATIVE_DIR": str(Path(negative_dir).resolve()),
+            "NWW_FEATURE_BANK_DIR": str(feature_bank.parent),
+            "NWW_REQUIRE_BROAD_FEATURE_BANK": "1",
         }
     )
     cmd = [
@@ -164,6 +187,8 @@ def prepare_nanowakeword_stage(
         cmd.extend(["--background-dir", str(Path(directory).resolve())])
     for directory in rir_dirs:
         cmd.extend(["--rir-dir", str(Path(directory).resolve())])
+    if validate_existing:
+        cmd.append("--validate-existing-candidate")
     return cmd, trainer_root, env, staging_dir
 
 

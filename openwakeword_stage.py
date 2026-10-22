@@ -21,13 +21,24 @@ from wake_bundle import (
     publish_open_wake_word,
     sha256_file,
 )
+from shared_feature_bank import (
+    FEATURE_BANK_FILENAME,
+    ensure_shared_negative_feature_bank,
+)
 
 
 OWW_TRAINER_REPOSITORY = "https://github.com/TaterTotterson/openWakeWord-Trainer.git"
-OWW_TRAINER_REVISION = "6bba88e0fd2e2e949b9985d6d6974be455e21f65"
+OWW_TRAINER_REVISION = "1774809eea3eb24ac15c2c3450281e4aa48c3a0f"
 # Retained as public aliases for older callers and tests.
 OWW_BUNDLE_SUFFIX = BUNDLE_SUFFIX
 OWW_METADATA_SUFFIX = ".oww.json"
+OWW_TRAINER_API_VERSION = 2
+OWW_TRAINER_CAPABILITIES = {
+    "shared-positive-tts",
+    "multiple-background-dirs",
+    "multiple-rir-dirs",
+    "shared-negative-feature-bank",
+}
 
 
 def normalize_train_openwakeword(value: Any, default: bool = True) -> bool:
@@ -39,9 +50,19 @@ def normalize_train_openwakeword(value: Any, default: bool = True) -> bool:
 
 
 def _valid_trainer_root(path: Path) -> bool:
-    return (path / "train_openwakeword.sh").is_file() and (
+    if not (path / "train_openwakeword.sh").is_file() or not (
         path / "scripts" / "train_openwakeword.py"
-    ).is_file()
+    ).is_file():
+        return False
+    try:
+        contract = json.loads((path / "trainer_contract.json").read_text(encoding="utf-8"))
+        capabilities = set(contract.get("capabilities") or [])
+        return (
+            int(contract.get("api_version") or 0) >= OWW_TRAINER_API_VERSION
+            and OWW_TRAINER_CAPABILITIES <= capabilities
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def ensure_openwakeword_trainer(
@@ -119,6 +140,14 @@ def prepare_openwakeword_stage(
     base_env = dict(os.environ if environ is None else environ)
     trainer_root = ensure_openwakeword_trainer(data_dir, environ=base_env, log=log)
     oww_root = Path(data_dir).resolve() / "openwakeword"
+    feature_bank = ensure_shared_negative_feature_bank(
+        data_dir,
+        legacy_candidates=(
+            oww_root / "assets" / FEATURE_BANK_FILENAME,
+            Path(data_dir).resolve() / "nanowakeword" / "feature_banks" / FEATURE_BANK_FILENAME,
+        ),
+        log=log,
+    )
     staging_dir = oww_root / "publish-staging" / safe_word
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
@@ -134,6 +163,7 @@ def prepare_openwakeword_stage(
             "OWW_PERSONAL_DIR": str(Path(personal_dir).resolve()),
             "OWW_NEGATIVE_DIR": str(Path(negative_dir).resolve()),
             "OWW_TRAINED_DIR": str(staging_dir),
+            "OWW_FEATURE_BANK_DIR": str(feature_bank.parent),
         }
     )
     if env.get("MWW_BLACKWELL_IMAGE") == "1":
@@ -172,6 +202,8 @@ def prepare_openwakeword_stage(
         str(staging_dir),
         "--data-dir",
         str(oww_root / "assets"),
+        "--feature-bank-dir",
+        str(feature_bank.parent),
     ]
     if generated_positive_dir is not None:
         generated = str(Path(generated_positive_dir).resolve())
