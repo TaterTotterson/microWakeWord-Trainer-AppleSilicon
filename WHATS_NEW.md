@@ -1,5 +1,5 @@
-- Improved NanoWakeWord CNN and GRU training with stronger hard-negative weighting, stable unseen holdouts, larger quality checks, and corrective retries based on real gate failures.
-- Added automatic threshold and detection-window calibration from patience 2 through 5, allowing responsive models to use shorter windows while retaining a safe fallback for difficult wake words.
-- Added one checksummed broad negative feature bank shared by openWakeWord and NanoWakeWord, including NanoWakeWord-only runs.
-- Added no-retrain NanoWakeWord candidate revalidation and clear reporting when the previously published model remains active after a rejected candidate.
-- Improved default-model selection to use measured recall, negative-trigger rate, and calibrated patience instead of always preferring CNN.
+- Fixed the ONNX Runtime dependency pin that could prevent openWakeWord or NanoWakeWord training environments from being installed.
+- Improved openWakeWord hard-negative training by weighting custom phrases and reviewed recordings separately from the broad negative bank.
+- Reserved uploaded recordings for an unseen validation holdout so quality checks better reflect real-device performance.
+- Added streaming calibration across patience 2 through 5 and now selects the shortest safe detection window automatically.
+- Added one corrective openWakeWord retry that learns from false triggers before a candidate is rejected.
