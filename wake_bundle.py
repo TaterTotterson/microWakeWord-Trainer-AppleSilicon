@@ -43,6 +43,7 @@ OPEN_PUBLIC_KEYS = (
     "synced_at", "trainer_revision", "metadata", "metadata_sha256",
     "artifacts", "recommended_threshold", "recommended_patience",
     "recommended_confirmation_threshold", "recommended_confirmation_patience",
+    "confirmation_required",
 )
 NANO_PUBLIC_KEYS = (
     "type", "name", "phrase", "created_at", "trained_at", "synced_at",
@@ -378,6 +379,7 @@ def bundle_catalog_fields(trained_dir: Path, safe_word: str, base_url: str = "")
                     "openwakeword_patience": oww.get("recommended_patience"),
                     "openwakeword_confirmation_threshold": oww.get("recommended_confirmation_threshold"),
                     "openwakeword_confirmation_patience": oww.get("recommended_confirmation_patience"),
+                    "openwakeword_confirmation_required": bool(oww.get("confirmation_required")),
                 }
             )
     nano = bundle.get("nano_wake_word")

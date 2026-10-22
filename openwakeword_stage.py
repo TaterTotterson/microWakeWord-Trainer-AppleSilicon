@@ -28,7 +28,7 @@ from shared_feature_bank import (
 
 
 OWW_TRAINER_REPOSITORY = "https://github.com/TaterTotterson/openWakeWord-Trainer.git"
-OWW_TRAINER_REVISION = "c2d29b5a00568067381c17290178888ed018e435"
+OWW_TRAINER_REVISION = "62952216d152a4d4c09f2f4ed7acde74e5d6a57a"
 # Retained as public aliases for older callers and tests.
 OWW_BUNDLE_SUFFIX = BUNDLE_SUFFIX
 OWW_METADATA_SUFFIX = ".oww.json"
@@ -42,6 +42,9 @@ OWW_TRAINER_CAPABILITIES = {
     "streaming-calibration-sweep",
     "corrective-quality-retry",
     "uploaded-audio-holdout",
+    "source-aware-deployment-gate",
+    "cumulative-corrective-retries",
+    "expanded-classifier-capacity",
 }
 
 
@@ -290,6 +293,15 @@ def publish_openwakeword_artifacts(
         raise RuntimeError(
             "openWakeWord failed deployment calibration; the existing published model was preserved"
         )
+    confirmation_required = calibration.get("confirmation_required") is True
+    existing_bundle = _read_json(destination / f"{safe_word}.wake-bundle.json")
+    if confirmation_required and not isinstance(
+        existing_bundle.get("micro_wake_word"), dict
+    ):
+        raise RuntimeError(
+            "openWakeWord requires MicroWakeWord confirmation for this operating point; "
+            "the existing published model was preserved"
+        )
 
     mappings: list[tuple[Path, Path]] = [
         (source_onnx, destination / f"{safe_word}.oww.onnx"),
@@ -323,6 +335,7 @@ def publish_openwakeword_artifacts(
             "phrase": phrase,
             "artifacts": oww_artifacts,
             "trainer_revision": OWW_TRAINER_REVISION,
+            "confirmation_required": confirmation_required,
         }
     )
     threshold, patience, confirmation_threshold, confirmation_patience = _oww_runtime_policy(calibration)
