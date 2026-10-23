@@ -28,7 +28,7 @@ from shared_feature_bank import (
 
 
 OWW_TRAINER_REPOSITORY = "https://github.com/TaterTotterson/openWakeWord-Trainer.git"
-OWW_TRAINER_REVISION = "62952216d152a4d4c09f2f4ed7acde74e5d6a57a"
+OWW_TRAINER_REVISION = "4bfce98b8dc27b197f149243d99621f1c6d75314"
 # Retained as public aliases for older callers and tests.
 OWW_BUNDLE_SUFFIX = BUNDLE_SUFFIX
 OWW_METADATA_SUFFIX = ".oww.json"
