@@ -242,6 +242,13 @@ button:disabled { opacity: .43; cursor: not-allowed; }
 .word-list a { overflow-wrap: anywhere; color: var(--orange-2); font-size: 11px; text-decoration: none; }
 
 .data-hero::after { background: radial-gradient(circle, rgba(176, 171, 164, .15), transparent 67%); }
+.storage-location-panel { overflow: hidden; border-color: rgba(255, 145, 52, .26); background: linear-gradient(145deg, rgba(255, 145, 52, .075), rgba(29, 29, 31, .9) 52%); }
+.storage-icon { color: var(--orange-2); border-color: rgba(255, 145, 52, .32); background: rgba(255, 145, 52, .1); }
+.storage-location { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(12, 12, 13, .6); }
+.storage-location > div { display: grid; min-width: 0; gap: 6px; }
+.storage-location span { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.storage-location code { overflow-wrap: anywhere; color: #e0dcd7; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.storage-hint { margin-top: 12px !important; color: var(--muted) !important; font-size: 11px; line-height: 1.55; }
 .data-panel { padding-bottom: 18px; }
 .data-list { display: grid; gap: 9px; }
 .data-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 18px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 15px; background: rgba(18, 18, 19, .64); }
@@ -297,7 +304,7 @@ button:disabled { opacity: .43; cursor: not-allowed; }
   .hero { align-items: flex-start; min-height: unset; padding: 24px; }.step-row { display: none; }
   .panel { padding: 19px; }.panel-head { grid-template-columns: auto minmax(0, 1fr); }.panel-head > :last-child:not(:nth-child(2)) { grid-column: 1 / -1; }
   .form-grid, .phrase-form, .stats, .action-grid, .range-grid, .model-choice-grid, .nano-architecture-grid { grid-template-columns: 1fr; }.field.wide { grid-column: auto; }
-  .audio-card header, .audio-card footer, .word-list article, .panel-footer { flex-direction: column; align-items: stretch; }
+  .audio-card header, .audio-card footer, .word-list article, .panel-footer, .storage-location { flex-direction: column; align-items: stretch; }
   .hard-negative-head { grid-template-columns: 42px minmax(0, 1fr); }.hard-negative-head > b { grid-column: 1 / -1; }.hard-negative-card footer { flex-direction: column; }.hard-negative-card footer strong { text-align: left; }
   .training-summary-card > header { grid-template-columns: 44px minmax(0, 1fr); }.training-summary-card > header > .pill { grid-column: 1 / -1; }.training-summary-grid { grid-template-columns: 1fr; }
   .audio-card footer > div { justify-content: flex-start; }.word-list article > button { width: 100%; }

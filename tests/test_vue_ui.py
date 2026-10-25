@@ -80,6 +80,17 @@ class VueTrainerUiTests(unittest.TestCase):
         self.assertIn('@scroll.passive="onConsoleScroll"', app)
         self.assertIn("Jump to latest", app)
 
+    def test_data_view_exposes_native_macos_folder_picker(self) -> None:
+        app = (REPO_ROOT / "frontend" / "src" / "TrainerApp.vue").read_text(encoding="utf-8")
+        store = (REPO_ROOT / "frontend" / "src" / "trainerStore.ts").read_text(encoding="utf-8")
+        types = (REPO_ROOT / "frontend" / "src" / "types.ts").read_text(encoding="utf-8")
+
+        self.assertIn("Change Folder…", app)
+        self.assertIn("macDataFolderPickerAvailable", app)
+        self.assertIn("wakeWordTrainerStorage", store)
+        self.assertIn('handler.postMessage({ action: "choose" })', store)
+        self.assertIn("data_directory?: string", types)
+
     def test_all_wake_word_model_targets_are_selectable(self) -> None:
         app = (REPO_ROOT / "frontend" / "src" / "TrainerApp.vue").read_text(encoding="utf-8")
         store = (REPO_ROOT / "frontend" / "src" / "trainerStore.ts").read_text(encoding="utf-8")

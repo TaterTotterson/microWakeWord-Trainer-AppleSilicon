@@ -58,6 +58,7 @@ class DataManagementTests(unittest.TestCase):
         payload = trainer._managed_data_payload()
         item = next(row for row in payload["items"] if row["id"] == "generated_samples")
 
+        self.assertEqual(payload["data_directory"], str(trainer.DATA_DIR))
         self.assertEqual(item["file_count"], 2)
         self.assertGreater(item["size_bytes"], 0)
         self.assertEqual(item["location"], "generated_samples")

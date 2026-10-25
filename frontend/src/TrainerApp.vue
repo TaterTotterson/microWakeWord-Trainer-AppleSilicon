@@ -5,10 +5,10 @@ import type { JsonRecord } from "./api";
 import {
   autoLinked, captureTone, claimTater, clearSamples, copyWakeWord, deleteManagedData, describeFormat,
   disposeTrainer, ensureSupportedTtsMode, formatBytes, formatTimestamp, hasConsole, initializeTrainer,
-  isBusy, itemAudioUrl, negativeCount, notify, personalCount, previewPhrase, refreshAuto,
+  isBusy, itemAudioUrl, macDataFolderPickerAvailable, negativeCount, notify, personalCount, previewPhrase, refreshAuto,
   refreshCaptured, refreshManagedData, refreshSamples, refreshWakeWords, removeSample, revertSample, reviewCaptured,
   retryOpenWakeWord, revalidateNanoWakeWord, runAutoAction, saveAuto, selectFiles, selectedSamples, startSession, startTraining, stopSession, sttEngines,
-  trainer, ttsRoute, unlinkTater, uploadSelectedFiles,
+  trainer, ttsRoute, unlinkTater, uploadSelectedFiles, chooseDataDirectory,
 } from "./trainerStore";
 import type { AudioItem, ManagedDataItem, SampleBucket, ViewName } from "./types";
 
@@ -390,6 +390,12 @@ function consoleTone(line: string): string {
         </template>
         <template v-else-if="trainer.activeView === 'data'">
           <section class="hero data-hero"><div><span class="eyebrow">Local storage</span><h2>Data Management</h2><p>See exactly what the trainer has downloaded, generated, recorded, and produced.</p></div><span class="pill hero-pill">{{ formatBytes(trainer.managedData.total_size_bytes) }} total</span></section>
+          <section class="panel storage-location-panel">
+            <header class="panel-head"><div class="number storage-icon">↗</div><div><h3>Data folder</h3><p>Put recordings, datasets, model downloads, caches, training environments, and results on any Mac-compatible drive.</p></div><button v-if="macDataFolderPickerAvailable" type="button" :disabled="trainer.training.running || isBusy('data') || isBusy('data-delete')" @click="chooseDataDirectory">Change Folder…</button></header>
+            <div class="storage-location"><div><span>Current location</span><code>{{ trainer.managedData.data_directory || "Loading…" }}</code></div><span v-if="macDataFolderPickerAvailable" class="pill success">Mac app</span><span v-else class="pill neutral">Open the Mac app to change</span></div>
+            <p class="storage-hint">Changing this folder safely stops the local trainer, copies and verifies the data, then restarts it. Keep an external drive connected whenever you use the trainer.</p>
+            <p v-if="trainer.training.running" class="data-warning">Stop the active training session before changing the data folder.</p>
+          </section>
           <section class="panel">
             <header class="panel-head"><div class="number">i</div><div><h3>Trainer storage</h3><p>Deleting an item is permanent. Required downloads and generated caches will be rebuilt the next time training needs them.</p></div><button type="button" :disabled="isBusy('data') || isBusy('data-delete')" @click="refreshManagedData()">{{ isBusy('data') ? "Scanning…" : "Refresh sizes" }}</button></header>
             <div class="stats"><article><span>Space used</span><strong class="format-value">{{ formatBytes(trainer.managedData.total_size_bytes) }}</strong></article><article><span>Files</span><strong>{{ Number(trainer.managedData.total_file_count || 0).toLocaleString() }}</strong></article><article><span>Individual items</span><strong>{{ trainer.managedData.items.length }}</strong></article></div>

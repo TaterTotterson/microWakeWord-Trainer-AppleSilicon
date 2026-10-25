@@ -81,6 +81,31 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
         self.assertIn('"nanowakeword/"', self.launcher)
         self.assertIn('"tools/nanowakeword-trainer/"', self.launcher)
 
+    def test_native_data_folder_picker_persists_and_migrates_data_safely(self):
+        self.assertIn('private let trainerDataDirectoryDefaultsKey = "TrainerDataDirectory"', self.launcher)
+        self.assertIn("let panel = NSOpenPanel()", self.launcher)
+        self.assertIn('body["action"] as? String == "choose"', self.launcher)
+        self.assertIn("migrationProgressIndicator.style = .bar", self.launcher)
+        self.assertIn("try verifyMigrationEntries(entries)", self.launcher)
+        self.assertIn("try rewriteMovedVirtualEnvironmentReferences(", self.launcher)
+
+        start = self.launcher.index("private func migrateData(")
+        end = self.launcher.index("private func validateMigrationPaths", start)
+        implementation = self.launcher[start:end]
+        verify_index = implementation.index("try verifyMigrationEntries(entries)")
+        switch_index = implementation.index(
+            "UserDefaults.standard.set(destination.path, forKey: trainerDataDirectoryDefaultsKey)"
+        )
+        remove_index = implementation.index("try fileManager.removeItem(at: item)")
+        self.assertLess(verify_index, switch_index)
+        self.assertLess(switch_index, remove_index)
+
+    def test_custom_data_folder_does_not_move_bundled_source(self):
+        self.assertIn("sourceRoot = defaultDataRoot", self.launcher)
+        self.assertIn('environment["WAKEWORD_TRAINER_DATA_DIR"] = dataRoot.path', self.launcher)
+        self.assertIn('"shared_feature_banks/"', self.launcher)
+        self.assertIn('"generated_negative_samples/"', self.launcher)
+
     def test_termination_reply_runs_in_appkit_modal_run_loop(self):
         start = self.launcher.index("func applicationShouldTerminate(")
         end = self.launcher.index("private func startRecoveryWatchdog", start)

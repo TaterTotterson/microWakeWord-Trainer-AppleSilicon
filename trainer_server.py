@@ -452,6 +452,7 @@ def _managed_data_payload() -> Dict[str, Any]:
             })
     return {
         "ok": True,
+        "data_directory": str(DATA_DIR),
         "items": items,
         "total_size_bytes": total_size,
         "total_file_count": total_files,

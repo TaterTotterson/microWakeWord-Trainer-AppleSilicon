@@ -8,12 +8,15 @@ private let trainerPort = 8789
 private let appDisplayName = "WakeWord Trainer"
 private let appExecutableName = "WakeWordTrainer"
 private let appBundleName = "WakeWord Trainer.app"
+private let trainerDataDirectoryDefaultsKey = "TrainerDataDirectory"
+private let trainerDataFolderName = "WakeWord Trainer Data"
 
 private enum BackendState: Equatable {
     case stopped
     case bootstrapping
     case starting
     case running
+    case movingData
     case failed(String)
 
     var label: String {
@@ -26,16 +29,33 @@ private enum BackendState: Equatable {
             return "Starting"
         case .running:
             return "Running"
+        case .movingData:
+            return "Moving trainer data"
         case .failed(let message):
             return "Failed: \(message)"
         }
     }
 }
 
+private struct DataMigrationProgress {
+    let fraction: Double
+    let detail: String
+}
+
+private struct DataMigrationEntry {
+    let source: URL
+    let destination: URL
+    let relativePath: String
+    let isDirectory: Bool
+    let isSymbolicLink: Bool
+    let byteCount: Int64
+}
+
 private final class BackendManager {
     let supportRoot: URL
     let appRoot: URL
-    let dataRoot: URL
+    let defaultDataRoot: URL
+    private(set) var dataRoot: URL
     let sourceRoot: URL
     let venvDir: URL
     let pythonRoot: URL
@@ -45,8 +65,12 @@ private final class BackendManager {
 
     var onStateChange: ((BackendState) -> Void)?
     var onLogAppend: ((String) -> Void)?
+    var onDataMigrationProgress: ((DataMigrationProgress) -> Void)?
 
     private let usesBundledSource: Bool
+    private let dataRootComesFromEnvironment: Bool
+    private let dataMigrationLock = NSLock()
+    private var dataMigrationActive = false
     private var process: Process?
     private var logHandle: FileHandle?
     private var outputPipe: Pipe?
@@ -66,21 +90,111 @@ private final class BackendManager {
         let home = FileManager.default.homeDirectoryForCurrentUser
         supportRoot = home.appendingPathComponent(".taterwakewordtrainer", isDirectory: true)
         appRoot = supportRoot.appendingPathComponent("app", isDirectory: true)
-        dataRoot = appRoot.appendingPathComponent("current", isDirectory: true)
+        defaultDataRoot = appRoot.appendingPathComponent("current", isDirectory: true)
         venvDir = supportRoot.appendingPathComponent("recorder-venv", isDirectory: true)
         pythonRoot = supportRoot.appendingPathComponent("python", isDirectory: true)
         managedPythonDir = pythonRoot.appendingPathComponent("cpython-3.11", isDirectory: true)
         logsDir = supportRoot.appendingPathComponent("logs", isDirectory: true)
 
         let environment = ProcessInfo.processInfo.environment
+        if let raw = environment["WAKEWORD_TRAINER_DATA_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            dataRoot = URL(fileURLWithPath: NSString(string: raw).expandingTildeInPath, isDirectory: true)
+            dataRootComesFromEnvironment = true
+        } else if let saved = UserDefaults.standard.string(forKey: trainerDataDirectoryDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !saved.isEmpty {
+            dataRoot = URL(fileURLWithPath: NSString(string: saved).expandingTildeInPath, isDirectory: true)
+            dataRootComesFromEnvironment = false
+        } else {
+            dataRoot = defaultDataRoot
+            dataRootComesFromEnvironment = false
+        }
         if let raw = environment["WAKEWORD_TRAINER_SOURCE_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty {
             sourceRoot = URL(fileURLWithPath: NSString(string: raw).expandingTildeInPath, isDirectory: true)
             usesBundledSource = false
         } else {
-            sourceRoot = dataRoot
+            sourceRoot = defaultDataRoot
             usesBundledSource = true
         }
+    }
+
+    var canChangeDataRoot: Bool {
+        !dataRootComesFromEnvironment
+    }
+
+    func normalizedDataDestination(selectedFolder: URL) -> URL {
+        let selected = selectedFolder.resolvingSymlinksInPath().standardizedFileURL
+        if selected.lastPathComponent.caseInsensitiveCompare(trainerDataFolderName) == .orderedSame {
+            return selected
+        }
+        return selected.appendingPathComponent(trainerDataFolderName, isDirectory: true)
+    }
+
+    func moveData(to requestedDestination: URL, completion: @escaping (Result<URL, Error>) -> Void) {
+        guard canChangeDataRoot else {
+            completion(.failure(LauncherError(
+                "The data folder is controlled by WAKEWORD_TRAINER_DATA_DIR for this launch."
+            )))
+            return
+        }
+
+        let destination = requestedDestination.resolvingSymlinksInPath().standardizedFileURL
+        let current = dataRoot.resolvingSymlinksInPath().standardizedFileURL
+        if destination == current {
+            completion(.success(current))
+            return
+        }
+        guard beginDataMigration() else {
+            completion(.failure(LauncherError("A trainer data move is already in progress.")))
+            return
+        }
+        state = .movingData
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            self.stop(waitForExit: true)
+            self.state = .movingData
+            do {
+                try self.migrateData(from: current, to: destination)
+                self.dataRoot = destination
+                UserDefaults.standard.set(destination.path, forKey: trainerDataDirectoryDefaultsKey)
+                UserDefaults.standard.synchronize()
+                self.appendLauncherLog("Trainer data moved to \(destination.path).\n")
+                self.finishDataMigration()
+                DispatchQueue.main.async {
+                    completion(.success(destination))
+                }
+                self.start()
+            } catch {
+                self.appendLauncherLog("Trainer data move failed: \(error.localizedDescription)\n")
+                self.finishDataMigration()
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+                self.start()
+            }
+        }
+    }
+
+    private func beginDataMigration() -> Bool {
+        dataMigrationLock.lock()
+        defer { dataMigrationLock.unlock() }
+        guard !dataMigrationActive else { return false }
+        dataMigrationActive = true
+        return true
+    }
+
+    private func finishDataMigration() {
+        dataMigrationLock.lock()
+        dataMigrationActive = false
+        dataMigrationLock.unlock()
+    }
+
+    private func isDataMigrationActive() -> Bool {
+        dataMigrationLock.lock()
+        defer { dataMigrationLock.unlock() }
+        return dataMigrationActive
     }
 
     func start() {
@@ -147,7 +261,7 @@ private final class BackendManager {
             )
             closeLogHandle()
             self.process = nil
-            state = .stopped
+            state = isDataMigrationActive() ? .movingData : .stopped
             return
         }
 
@@ -167,7 +281,7 @@ private final class BackendManager {
         }
         closeLogHandle()
         self.process = nil
-        state = .stopped
+        state = isDataMigrationActive() ? .movingData : .stopped
     }
 
     private func waitForManagedProcessExit(
@@ -316,7 +430,7 @@ private final class BackendManager {
                     self.appendLauncherLog("Recovery launch failed: \(error.localizedDescription)\n")
                     self.state = .failed(error.localizedDescription)
                 }
-            case .stopped, .bootstrapping, .running, .failed:
+            case .stopped, .bootstrapping, .running, .movingData, .failed:
                 return
             }
         }
@@ -357,6 +471,16 @@ private final class BackendManager {
     }
 
     private func ensurePrivateFolders() throws {
+        if dataRoot.standardizedFileURL != defaultDataRoot.standardizedFileURL {
+            let parent = dataRoot.deletingLastPathComponent()
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw LauncherError(
+                    "The selected trainer data drive is not available: \(parent.path). Reconnect it and start again."
+                )
+            }
+        }
+
         let folders = [
             supportRoot,
             appRoot,
@@ -371,6 +495,386 @@ private final class BackendManager {
         for folder in folders {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
+    }
+
+    private func migrateData(from source: URL, to destination: URL) throws {
+        let fileManager = FileManager.default
+        try validateMigrationPaths(source: source, destination: destination)
+
+        let destinationExisted = fileManager.fileExists(atPath: destination.path)
+        var preexistingDestinationPaths: Set<String> = []
+        if destinationExisted {
+            let existing = try fileManager.contentsOfDirectory(
+                at: destination,
+                includingPropertiesForKeys: nil,
+                options: []
+            )
+            preexistingDestinationPaths = Set(existing.map { $0.standardizedFileURL.path })
+            guard existing.allSatisfy({ $0.lastPathComponent == ".DS_Store" }) else {
+                throw LauncherError(
+                    "\(destination.path) already contains files. Choose another folder so existing data is never overwritten."
+                )
+            }
+        } else {
+            try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        }
+
+        do {
+            try verifyDestinationCapabilities(destination)
+            reportMigrationProgress(0.01, "Scanning the current trainer data…")
+            let sourceItems = try migrationSourceItems(at: source)
+            let entries = try migrationEntries(
+                sourceItems: sourceItems,
+                destinationRoot: destination
+            )
+            let totalBytes = entries.reduce(Int64(0)) { $0 + $1.byteCount }
+            try verifyAvailableSpace(at: destination, requiredBytes: totalBytes)
+
+            reportMigrationProgress(0.02, "Preparing \(entries.count) item\(entries.count == 1 ? "" : "s")…")
+            var copiedBytes: Int64 = 0
+            var copiedFiles = 0
+            let fileCount = entries.filter { !$0.isDirectory }.count
+
+            for entry in entries {
+                if entry.isDirectory {
+                    try fileManager.createDirectory(at: entry.destination, withIntermediateDirectories: true)
+                    continue
+                }
+
+                try fileManager.createDirectory(
+                    at: entry.destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                let topLevel = entry.relativePath.split(separator: "/").first.map(String.init) ?? entry.relativePath
+                if entry.isSymbolicLink {
+                    try fileManager.copyItem(at: entry.source, to: entry.destination)
+                    copiedBytes += entry.byteCount
+                } else {
+                    try copyRegularFile(from: entry.source, to: entry.destination) { bytesWritten in
+                        copiedBytes += bytesWritten
+                        let byteFraction = totalBytes > 0 ? Double(copiedBytes) / Double(totalBytes) : 1
+                        let fileFraction = fileCount > 0 ? Double(copiedFiles) / Double(fileCount) : 1
+                        let fraction = 0.03 + (0.82 * max(byteFraction, fileFraction * 0.08))
+                        reportMigrationProgress(fraction, "Copying \(topLevel)…")
+                    }
+                }
+                copiedFiles += 1
+                let byteFraction = totalBytes > 0 ? Double(copiedBytes) / Double(totalBytes) : 1
+                let fileFraction = fileCount > 0 ? Double(copiedFiles) / Double(fileCount) : 1
+                let fraction = 0.03 + (0.82 * max(byteFraction, fileFraction * 0.08))
+                reportMigrationProgress(fraction, "Copying \(topLevel)…")
+            }
+
+            reportMigrationProgress(0.88, "Verifying the copied data…")
+            try verifyMigrationEntries(entries)
+            try rewriteMovedVirtualEnvironmentReferences(
+                entries: entries,
+                oldRoot: source.path,
+                newRoot: destination.path
+            )
+
+            // Switch the saved location before removing the old copy. If the app
+            // exits earlier than this point, the complete original remains active.
+            reportMigrationProgress(0.94, "Switching to the new data folder…")
+            UserDefaults.standard.set(destination.path, forKey: trainerDataDirectoryDefaultsKey)
+            UserDefaults.standard.synchronize()
+
+            for item in sourceItems {
+                do {
+                    try fileManager.removeItem(at: item)
+                } catch {
+                    appendLauncherLog(
+                        "Copied data successfully but could not remove old item \(item.path): \(error.localizedDescription)\n"
+                    )
+                }
+            }
+            reportMigrationProgress(1, "Data move complete. Restarting the trainer…")
+        } catch {
+            if !destinationExisted {
+                try? fileManager.removeItem(at: destination)
+            } else if let children = try? fileManager.contentsOfDirectory(
+                at: destination,
+                includingPropertiesForKeys: nil
+            ) {
+                for child in children where !preexistingDestinationPaths.contains(child.standardizedFileURL.path) {
+                    try? fileManager.removeItem(at: child)
+                }
+            }
+            throw error
+        }
+    }
+
+    private func validateMigrationPaths(source: URL, destination: URL) throws {
+        let sourcePath = source.resolvingSymlinksInPath().standardizedFileURL.path
+        let destinationPath = destination.resolvingSymlinksInPath().standardizedFileURL.path
+        guard destinationPath != "/", destinationPath != FileManager.default.homeDirectoryForCurrentUser.path else {
+            throw LauncherError("Choose a dedicated folder or drive for trainer data.")
+        }
+        guard !destinationPath.hasPrefix(sourcePath + "/"), !sourcePath.hasPrefix(destinationPath + "/") else {
+            throw LauncherError("The new data folder cannot be inside the current data folder, or contain it.")
+        }
+        guard destination.standardizedFileURL != sourceRoot.standardizedFileURL else {
+            throw LauncherError("The trainer application folder cannot also be used as the new data folder.")
+        }
+    }
+
+    private func verifyDestinationCapabilities(_ destination: URL) throws {
+        let fileManager = FileManager.default
+        let probe = destination.appendingPathComponent(".wakeword-trainer-write-test-\(UUID().uuidString)")
+        let link = destination.appendingPathComponent(".wakeword-trainer-link-test-\(UUID().uuidString)")
+        defer {
+            try? fileManager.removeItem(at: link)
+            try? fileManager.removeItem(at: probe)
+        }
+        do {
+            try Data("WakeWord Trainer".utf8).write(to: probe, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: probe.path)
+            try fileManager.createSymbolicLink(at: link, withDestinationURL: probe)
+        } catch {
+            throw LauncherError(
+                "The selected drive must be writable and support macOS file permissions and symbolic links. APFS is recommended."
+            )
+        }
+    }
+
+    private func verifyAvailableSpace(at destination: URL, requiredBytes: Int64) throws {
+        guard requiredBytes > 0 else { return }
+        let values = try destination.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        guard let available = values.volumeAvailableCapacityForImportantUsage else { return }
+        let reserve = max(Int64(512 * 1024 * 1024), requiredBytes / 20)
+        guard available >= requiredBytes + reserve else {
+            throw LauncherError(
+                "The selected drive does not have enough free space. Free at least \(formattedBytes(requiredBytes + reserve))."
+            )
+        }
+    }
+
+    private func migrationSourceItems(at source: URL) throws -> [URL] {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: source.path) else { return [] }
+        let allItems = try fileManager.contentsOfDirectory(
+            at: source,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: []
+        )
+
+        guard source.standardizedFileURL == sourceRoot.standardizedFileURL, usesBundledSource else {
+            return allItems.filter { $0.lastPathComponent != ".DS_Store" }
+        }
+
+        var applicationNames: Set<String> = []
+        if let bundledSource = Bundle.main.resourceURL?.appendingPathComponent("TrainerSource", isDirectory: true),
+           let bundledItems = try? fileManager.contentsOfDirectory(
+               at: bundledSource,
+               includingPropertiesForKeys: nil,
+               options: []
+           ) {
+            applicationNames = Set(bundledItems.map(\.lastPathComponent))
+        }
+
+        let knownDataNames: Set<String> = [
+            ".cache", ".venv", ".wake_word_samples.build",
+            "audioset", "audioset_16k", "auto_train_config.json", "auto_train_models",
+            "auto_train_state.json", "captured_audio", "chime", "chime_16k",
+            "chime_corrupted_files.log", "fma", "fma_16k", "fma_corrupted_files.log",
+            "generated_augmented_features", "generated_negative_features", "generated_negative_samples",
+            "generated_samples", "micro-wake-word", "mit_rirs", "nanowakeword",
+            "negative_datasets", "negative_samples", "openwakeword", "output",
+            "personal_augmented_features", "personal_samples", "piper-sample-generator",
+            "recorder_training.log", "reviewed_negative_features", "shared_feature_banks",
+            "tools", "trained_models", "trained_wake_words", "training_parameters.yaml",
+            "trim_history", "tts-envs", "voice-bank", "wham", "wham_16k",
+            "wham_corrupted_files.log"
+        ]
+
+        return allItems.filter { item in
+            let name = item.lastPathComponent
+            if name == ".DS_Store" { return false }
+            if knownDataNames.contains(name) { return true }
+            if !applicationNames.isEmpty && !applicationNames.contains(name) { return true }
+            // Legacy root-level packaged models were written as matching JSON/TFLite pairs.
+            if ["json", "tflite"].contains(item.pathExtension.lowercased()) {
+                let siblingExtension = item.pathExtension.lowercased() == "json" ? "tflite" : "json"
+                return fileManager.fileExists(atPath: item.deletingPathExtension().appendingPathExtension(siblingExtension).path)
+            }
+            return false
+        }
+    }
+
+    private func migrationEntries(
+        sourceItems: [URL],
+        destinationRoot: URL
+    ) throws -> [DataMigrationEntry] {
+        var entries: [DataMigrationEntry] = []
+        for item in sourceItems {
+            try appendMigrationEntries(
+                source: item,
+                relativePath: item.lastPathComponent,
+                destinationRoot: destinationRoot,
+                entries: &entries
+            )
+        }
+        return entries.sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+            return lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
+        }
+    }
+
+    private func appendMigrationEntries(
+        source: URL,
+        relativePath: String,
+        destinationRoot: URL,
+        entries: inout [DataMigrationEntry]
+    ) throws {
+        let fileManager = FileManager.default
+        let attributes = try fileManager.attributesOfItem(atPath: source.path)
+        let fileType = attributes[.type] as? FileAttributeType
+        let isSymbolicLink = fileType == .typeSymbolicLink
+        let isDirectory = fileType == .typeDirectory && !isSymbolicLink
+        let byteCount = isDirectory ? 0 : (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        entries.append(DataMigrationEntry(
+            source: source,
+            destination: destinationRoot.appendingPathComponent(relativePath, isDirectory: isDirectory),
+            relativePath: relativePath,
+            isDirectory: isDirectory,
+            isSymbolicLink: isSymbolicLink,
+            byteCount: byteCount
+        ))
+        guard isDirectory else { return }
+        for child in try fileManager.contentsOfDirectory(
+            at: source,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) {
+            try appendMigrationEntries(
+                source: child,
+                relativePath: relativePath + "/" + child.lastPathComponent,
+                destinationRoot: destinationRoot,
+                entries: &entries
+            )
+        }
+    }
+
+    private func verifyMigrationEntries(_ entries: [DataMigrationEntry]) throws {
+        let fileManager = FileManager.default
+        for entry in entries {
+            let attributes = try fileManager.attributesOfItem(atPath: entry.destination.path)
+            let type = attributes[.type] as? FileAttributeType
+            if entry.isDirectory {
+                guard type == .typeDirectory else {
+                    throw LauncherError("A copied data folder could not be verified: \(entry.relativePath)")
+                }
+            } else if entry.isSymbolicLink {
+                guard type == .typeSymbolicLink else {
+                    throw LauncherError("A copied data link could not be verified: \(entry.relativePath)")
+                }
+            } else {
+                let copiedSize = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+                guard copiedSize == entry.byteCount else {
+                    throw LauncherError("A copied data file could not be verified: \(entry.relativePath)")
+                }
+            }
+        }
+    }
+
+    private func copyRegularFile(
+        from source: URL,
+        to destination: URL,
+        onProgress: (Int64) -> Void
+    ) throws {
+        let fileManager = FileManager.default
+        let attributes = try fileManager.attributesOfItem(atPath: source.path)
+        let creationAttributes: [FileAttributeKey: Any]
+        if let permissions = attributes[.posixPermissions] {
+            creationAttributes = [.posixPermissions: permissions]
+        } else {
+            creationAttributes = [:]
+        }
+        guard fileManager.createFile(
+            atPath: destination.path,
+            contents: nil,
+            attributes: creationAttributes
+        ) else {
+            throw LauncherError("Could not create copied data file: \(destination.lastPathComponent)")
+        }
+
+        let input = try FileHandle(forReadingFrom: source)
+        let output = try FileHandle(forWritingTo: destination)
+        do {
+            while true {
+                let chunk = try input.read(upToCount: 8 * 1024 * 1024) ?? Data()
+                if chunk.isEmpty { break }
+                try output.write(contentsOf: chunk)
+                onProgress(Int64(chunk.count))
+            }
+            try output.synchronize()
+            try input.close()
+            try output.close()
+        } catch {
+            try? input.close()
+            try? output.close()
+            throw error
+        }
+
+        var dates: [FileAttributeKey: Any] = [:]
+        if let modified = attributes[.modificationDate] { dates[.modificationDate] = modified }
+        if let created = attributes[.creationDate] { dates[.creationDate] = created }
+        try? fileManager.setAttributes(dates, ofItemAtPath: destination.path)
+    }
+
+    private func rewriteMovedVirtualEnvironmentReferences(
+        entries: [DataMigrationEntry],
+        oldRoot: String,
+        newRoot: String
+    ) throws {
+        guard oldRoot != newRoot else { return }
+        let fileManager = FileManager.default
+        let oldBytes = Data(oldRoot.utf8)
+        for entry in entries where entry.relativePath == ".venv" || entry.relativePath.hasPrefix(".venv/") {
+            if entry.isSymbolicLink {
+                let target = try fileManager.destinationOfSymbolicLink(atPath: entry.destination.path)
+                guard target.contains(oldRoot) else { continue }
+                try fileManager.removeItem(at: entry.destination)
+                try fileManager.createSymbolicLink(
+                    atPath: entry.destination.path,
+                    withDestinationPath: target.replacingOccurrences(of: oldRoot, with: newRoot)
+                )
+                continue
+            }
+            guard !entry.isDirectory, entry.byteCount <= 2 * 1024 * 1024 else { continue }
+            let data = try Data(contentsOf: entry.destination)
+            guard data.range(of: oldBytes) != nil, !data.contains(0) else { continue }
+            guard var text = String(data: data, encoding: .utf8) else { continue }
+            let attributes = try fileManager.attributesOfItem(atPath: entry.destination.path)
+            text = text.replacingOccurrences(of: oldRoot, with: newRoot)
+            try text.write(to: entry.destination, atomically: true, encoding: .utf8)
+            if let permissions = attributes[.posixPermissions] {
+                try fileManager.setAttributes(
+                    [.posixPermissions: permissions],
+                    ofItemAtPath: entry.destination.path
+                )
+            }
+            var dates: [FileAttributeKey: Any] = [:]
+            if let modified = attributes[.modificationDate] { dates[.modificationDate] = modified }
+            if let created = attributes[.creationDate] { dates[.creationDate] = created }
+            try? fileManager.setAttributes(dates, ofItemAtPath: entry.destination.path)
+        }
+    }
+
+    private func reportMigrationProgress(_ fraction: Double, _ detail: String) {
+        let progress = DataMigrationProgress(
+            fraction: min(1, max(0, fraction)),
+            detail: detail
+        )
+        DispatchQueue.main.async { [weak self] in
+            self?.onDataMigrationProgress?(progress)
+        }
+    }
+
+    private func formattedBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
 
     private func prepareSource() throws {
@@ -413,6 +917,7 @@ private final class BackendManager {
             ".cache/",
             ".recorder-venv/",
             ".venv/",
+            ".wake_word_samples.build/",
             "__pycache__/",
             "*.pyc",
             "macos/",
@@ -434,6 +939,8 @@ private final class BackendManager {
             "nanowakeword/",
             "tools/nanowakeword-trainer/",
             "generated_samples/",
+            "generated_negative_samples/",
+            "generated_negative_features/",
             "generated_augmented_features/",
             "personal_augmented_features/",
             "reviewed_negative_features/",
@@ -443,6 +950,7 @@ private final class BackendManager {
             "voice-bank/",
             "mit_rirs/",
             "negative_datasets/",
+            "shared_feature_banks/",
             "audioset/",
             "audioset_16k/",
             "fma/",
@@ -629,10 +1137,18 @@ private final class BackendManager {
         process.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
                 guard let self else { return }
+                if let currentProcess = self.process, currentProcess !== proc {
+                    return
+                }
+                if self.process == nil, self.state == .bootstrapping || self.state == .starting {
+                    return
+                }
                 self.detachOutputPipe()
                 self.closeLogHandle()
                 self.process = nil
-                if proc.terminationStatus == 0 {
+                if self.isDataMigrationActive() {
+                    self.state = .movingData
+                } else if proc.terminationStatus == 0 {
                     self.state = .stopped
                 } else {
                     self.state = .failed("Trainer exited with status \(proc.terminationStatus)")
@@ -1472,20 +1988,29 @@ private final class UpdateManager {
     }
 }
 
-private final class TrainerWindowController: NSWindowController, WKNavigationDelegate, WKUIDelegate {
+private final class TrainerWindowController: NSWindowController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private let webView: WKWebView
     private let setupView: NSVisualEffectView
     private let setupLogoView: NSImageView
     private let progressIndicator: NSProgressIndicator
+    private let migrationProgressIndicator: NSProgressIndicator
     private let statusTitleLabel: NSTextField
     private let statusDetailLabel: NSTextField
     private var outputBuffer = ""
+    var onChangeDataFolderRequested: (() -> Void)?
 
     init() {
-        webView = WKWebView(frame: .zero)
+        let webConfiguration = WKWebViewConfiguration()
+        webConfiguration.userContentController.addUserScript(WKUserScript(
+            source: "window.__wakeWordTrainerMac = { dataFolderPicker: true };",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        webView = WKWebView(frame: .zero, configuration: webConfiguration)
         setupView = NSVisualEffectView(frame: .zero)
         setupLogoView = NSImageView(frame: .zero)
         progressIndicator = NSProgressIndicator(frame: .zero)
+        migrationProgressIndicator = NSProgressIndicator(frame: .zero)
         statusTitleLabel = NSTextField(labelWithString: "Starting WakeWord Trainer")
         statusDetailLabel = NSTextField(labelWithString: "Preparing the local capture server...")
 
@@ -1502,6 +2027,7 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
 
         super.init(window: window)
 
+        webConfiguration.userContentController.add(self, name: "wakeWordTrainerStorage")
         webView.navigationDelegate = self
         webView.uiDelegate = self
 
@@ -1511,6 +2037,7 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
         setupView.translatesAutoresizingMaskIntoConstraints = false
         setupLogoView.translatesAutoresizingMaskIntoConstraints = false
         progressIndicator.translatesAutoresizingMaskIntoConstraints = false
+        migrationProgressIndicator.translatesAutoresizingMaskIntoConstraints = false
         statusTitleLabel.translatesAutoresizingMaskIntoConstraints = false
         statusDetailLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1527,6 +2054,12 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
         progressIndicator.style = .spinning
         progressIndicator.controlSize = .regular
         progressIndicator.startAnimation(nil)
+        migrationProgressIndicator.style = .bar
+        migrationProgressIndicator.isIndeterminate = false
+        migrationProgressIndicator.minValue = 0
+        migrationProgressIndicator.maxValue = 100
+        migrationProgressIndicator.doubleValue = 0
+        migrationProgressIndicator.isHidden = true
 
         statusTitleLabel.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
         statusTitleLabel.textColor = .labelColor
@@ -1538,6 +2071,7 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
 
         setupView.addSubview(setupLogoView)
         setupView.addSubview(progressIndicator)
+        setupView.addSubview(migrationProgressIndicator)
         setupView.addSubview(statusTitleLabel)
         setupView.addSubview(statusDetailLabel)
         contentView.addSubview(webView)
@@ -1560,6 +2094,9 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
             setupLogoView.widthAnchor.constraint(lessThanOrEqualToConstant: 760),
             progressIndicator.centerXAnchor.constraint(equalTo: setupView.centerXAnchor),
             progressIndicator.topAnchor.constraint(equalTo: setupLogoView.bottomAnchor, constant: 30),
+            migrationProgressIndicator.centerXAnchor.constraint(equalTo: setupView.centerXAnchor),
+            migrationProgressIndicator.centerYAnchor.constraint(equalTo: progressIndicator.centerYAnchor),
+            migrationProgressIndicator.widthAnchor.constraint(equalToConstant: 440),
             statusTitleLabel.leadingAnchor.constraint(equalTo: setupView.leadingAnchor, constant: 56),
             statusTitleLabel.trailingAnchor.constraint(equalTo: setupView.trailingAnchor, constant: -56),
             statusTitleLabel.topAnchor.constraint(equalTo: progressIndicator.bottomAnchor, constant: 20),
@@ -1575,8 +2112,19 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
         fatalError("init(coder:) has not been implemented")
     }
 
+    deinit {
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "wakeWordTrainerStorage")
+    }
+
     func load(url: URL) {
         webView.load(URLRequest(url: url))
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "wakeWordTrainerStorage" else { return }
+        if let body = message.body as? [String: Any], body["action"] as? String == "choose" {
+            onChangeDataFolderRequested?()
+        }
     }
 
     func webView(
@@ -1703,11 +2251,24 @@ private final class TrainerWindowController: NSWindowController, WKNavigationDel
         }
         setupView.isHidden = webVisible
         webView.isHidden = !webVisible
+        migrationProgressIndicator.isHidden = true
+        progressIndicator.isHidden = false
         if webVisible {
             progressIndicator.stopAnimation(nil)
         } else {
             progressIndicator.startAnimation(nil)
         }
+    }
+
+    func setMigrationProgress(_ progress: DataMigrationProgress) {
+        setupView.isHidden = false
+        webView.isHidden = true
+        progressIndicator.stopAnimation(nil)
+        progressIndicator.isHidden = true
+        migrationProgressIndicator.isHidden = false
+        migrationProgressIndicator.doubleValue = progress.fraction * 100
+        statusTitleLabel.stringValue = "Moving trainer data"
+        statusDetailLabel.stringValue = progress.detail
     }
 
     func updateSetupProgress(from text: String) {
@@ -1783,6 +2344,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenuItem: NSMenuItem?
     private var startMenuItem: NSMenuItem?
     private var stopMenuItem: NSMenuItem?
+    private var dataFolderMenuItem: NSMenuItem?
     private var updateMenuItem: NSMenuItem?
     private var checkUpdatesMenuItem: NSMenuItem?
     private var windowController: TrainerWindowController?
@@ -1805,6 +2367,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         backend.onLogAppend = { [weak self] text in
             self?.windowController?.updateSetupProgress(from: text)
         }
+        backend.onDataMigrationProgress = { [weak self] progress in
+            self?.windowController?.setMigrationProgress(progress)
+        }
         updater.onStateChange = { [weak self] state in
             self?.refreshUpdateMenu(for: state)
         }
@@ -1820,6 +2385,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if backend.state == .movingData {
+            let alert = NSAlert()
+            alert.messageText = "Trainer data is still moving"
+            alert.informativeText = "Keep WakeWord Trainer open until the move completes so the original data remains safe."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Keep Open")
+            alert.runModal()
+            return .terminateCancel
+        }
         if terminationInProgress {
             return .terminateLater
         }
@@ -1922,6 +2496,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Restart", action: #selector(restartTrainer), keyEquivalent: "r"))
         menu.addItem(stop)
         menu.addItem(NSMenuItem.separator())
+        let dataFolder = NSMenuItem(title: "Change Data Folder...", action: #selector(chooseDataFolder), keyEquivalent: "")
+        dataFolder.target = self
+        menu.addItem(dataFolder)
         menu.addItem(NSMenuItem(title: "Show Logs", action: #selector(showLogs), keyEquivalent: "l"))
         let checkUpdates = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdates), keyEquivalent: "")
         checkUpdates.target = self
@@ -1934,6 +2511,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem = status
         startMenuItem = start
         stopMenuItem = stop
+        dataFolderMenuItem = dataFolder
         updateMenuItem = update
         checkUpdatesMenuItem = checkUpdates
         refreshMenu(for: backend.state)
@@ -1944,12 +2522,21 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem?.title = "Status: \(state.label)"
         switch state {
         case .running, .starting, .bootstrapping:
+            dataFolderMenuItem?.isEnabled = backend.canChangeDataRoot
             startMenuItem?.isEnabled = false
             stopMenuItem?.isEnabled = true
             if !usesMenuBarImage {
                 statusItem?.button?.title = "W"
             }
+        case .movingData:
+            dataFolderMenuItem?.isEnabled = false
+            startMenuItem?.isEnabled = false
+            stopMenuItem?.isEnabled = false
+            if !usesMenuBarImage {
+                statusItem?.button?.title = "W"
+            }
         case .stopped, .failed:
+            dataFolderMenuItem?.isEnabled = backend.canChangeDataRoot
             startMenuItem?.isEnabled = true
             stopMenuItem?.isEnabled = false
             if !usesMenuBarImage {
@@ -2039,6 +2626,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                 detail: "Launching the local capture server on \(backend.webURL.absoluteString)",
                 webVisible: false
             )
+        case .movingData:
+            windowController?.setMigrationProgress(DataMigrationProgress(
+                fraction: 0,
+                detail: "Preparing the data transfer…"
+            ))
         case .stopped:
             windowController?.setStatus(
                 "WakeWord Trainer is stopped",
@@ -2056,6 +2648,97 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openBrowser() {
         NSWorkspace.shared.open(backend.webURL)
+    }
+
+    @objc private func chooseDataFolder() {
+        guard backend.canChangeDataRoot else {
+            presentStorageAlert(
+                title: "Data folder is managed externally",
+                message: "WAKEWORD_TRAINER_DATA_DIR controls this launch, so the folder cannot be changed from the app."
+            )
+            return
+        }
+        guard backend.state != .movingData else { return }
+
+        let panel = NSOpenPanel()
+        panel.title = "Choose a location for trainer data"
+        panel.message = "Choose a drive or folder. WakeWord Trainer Data will be created inside it."
+        panel.prompt = "Choose Location"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = backend.dataRoot.deletingLastPathComponent()
+
+        let handleSelection: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .OK, let selected = panel.url else { return }
+            let destination = self.backend.normalizedDataDestination(selectedFolder: selected)
+            if destination.standardizedFileURL == self.backend.dataRoot.standardizedFileURL {
+                self.presentStorageAlert(
+                    title: "This folder is already in use",
+                    message: destination.path
+                )
+                return
+            }
+            self.confirmDataMove(to: destination)
+        }
+
+        if let window = windowController?.window {
+            panel.beginSheetModal(for: window, completionHandler: handleSelection)
+        } else {
+            handleSelection(panel.runModal())
+        }
+    }
+
+    private func confirmDataMove(to destination: URL) {
+        let alert = NSAlert()
+        alert.messageText = "Move all trainer data?"
+        alert.informativeText = "Recordings, datasets, model downloads, training environments, caches, and results will move to:\n\n\(destination.path)\n\nAny active training will stop. This can take a while, so keep WakeWord Trainer open and the drive connected until it finishes. The original data stays in place if copying or verification fails."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move Data")
+        alert.addButton(withTitle: "Cancel")
+
+        let beginMove: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            self.windowController?.setMigrationProgress(DataMigrationProgress(
+                fraction: 0,
+                detail: "Stopping the local trainer safely…"
+            ))
+            self.backend.moveData(to: destination) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let location):
+                    self.presentStorageAlert(
+                        title: "Trainer data moved",
+                        message: "WakeWord Trainer will now use \(location.path). Keep this drive connected while using the trainer."
+                    )
+                case .failure(let error):
+                    self.presentStorageAlert(
+                        title: "Data could not be moved",
+                        message: "\(error.localizedDescription)\n\nThe previous data folder is still active."
+                    )
+                }
+            }
+        }
+
+        if let window = windowController?.window {
+            alert.beginSheetModal(for: window, completionHandler: beginMove)
+        } else {
+            beginMove(alert.runModal())
+        }
+    }
+
+    private func presentStorageAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        if let window = windowController?.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     @objc private func startTrainer() {
@@ -2089,6 +2772,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showWindow() {
         if windowController == nil {
             windowController = TrainerWindowController()
+            windowController?.onChangeDataFolderRequested = { [weak self] in
+                self?.chooseDataFolder()
+            }
             windowController?.updateSetupProgress(from: backend.recentLogText())
         }
         windowController?.showWindow(nil)

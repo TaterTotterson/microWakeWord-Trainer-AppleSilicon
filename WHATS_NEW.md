@@ -1,3 +1,3 @@
-- The overall training badge now turns yellow and says Needs attention whenever any published model is low quality or was not evaluated.
-- The summary now distinguishes models that were successfully published from models that actually passed their quality targets.
-- MicroWakeWord runs without calibration results are explicitly labeled Not evaluated instead of appearing as a successful quality result.
+- Choose a custom trainer data folder from the Data tab or menu bar, including a folder on an external drive.
+- Moving data now shows clear confirmation and progress while the trainer safely copies and verifies everything before switching locations.
+- Your selected location persists across launches, with helpful guidance if an external drive is disconnected.

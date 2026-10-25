@@ -49,6 +49,10 @@ The app wraps the same local web UI, keeps the capture server running from the m
 ~/.taterwakewordtrainer/
 ```
 
+To put the large trainer data on an external drive, open `Data` and click `Change Folder…`, or use `Change Data Folder...` in the menu bar. Choose a drive or parent folder; the app creates `WakeWord Trainer Data` inside it. The trainer stops locally, copies and verifies the data with visible progress, switches the saved location only after verification, and then restarts. Use an APFS or other Mac-compatible writable volume and keep it connected while the trainer is running.
+
+The small native launcher runtime, recovery logs, and managed base Python stay under `~/.taterwakewordtrainer/` so the app can still explain a missing or disconnected data drive.
+
 Use the manual clone flow below if you want to develop the trainer, run directly from source, or inspect the scripts.
 
 ---
@@ -183,7 +187,7 @@ It wraps the same local web UI, keeps the capture server running from a menu bar
 ~/.taterwakewordtrainer/app/current
 ```
 
-Captured audio, samples, generated models, caches, and local virtual environments stay in that support folder so app updates do not wipe training data.
+Captured audio, samples, generated models, caches, and local training environments use the selected data folder and are kept across app updates. The default remains `~/.taterwakewordtrainer/app/current` until it is changed from the Data tab or menu bar.
 
 Build locally:
 
@@ -342,7 +346,7 @@ The language picker is built from the live OmniVoice catalog and the installed m
 - Qwen exposes 18,750 balanced voice conditions before any instruction repeats, while fresh sampling seeds add further variation. Piper uses the full speaker set in its installed model.
 - Every candidate is checked for static, broadband/high-frequency noise, silence, clipping, excessive duration/rambling, and exact duplication before it can enter training. Failed provider shares are filled by a safer provider.
 
-Model environments and weights download on first use and are cached under `~/.taterwakewordtrainer/app/current`. The Qwen and MOSS paths use MLX-Audio on Apple Silicon; OmniVoice uses PyTorch MPS. These environments are isolated from the TensorFlow training environment.
+Model environments and weights download on first use and are cached under the selected data folder (by default `~/.taterwakewordtrainer/app/current`). The Qwen and MOSS paths use MLX-Audio on Apple Silicon; OmniVoice uses PyTorch MPS. These environments are isolated from the TensorFlow training environment.
 
 `Four-provider ensemble` uses OmniVoice, Qwen, MOSS, and Piper when a compatible Piper model exists, and safely falls back to the modern providers where it does not. `Modern only` excludes Piper, and `Piper only` preserves the legacy comparison route.
 

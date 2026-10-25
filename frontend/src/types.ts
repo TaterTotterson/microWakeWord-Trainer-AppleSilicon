@@ -144,6 +144,7 @@ export interface ManagedDataItem extends JsonRecord {
 }
 
 export interface ManagedDataPayload extends JsonRecord {
+  data_directory?: string;
   items: ManagedDataItem[];
   total_size_bytes: number;
   total_file_count: number;

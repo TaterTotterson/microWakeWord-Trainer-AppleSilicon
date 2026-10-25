@@ -18,6 +18,17 @@ import type {
   WakeWordItem,
 } from "./types";
 
+declare global {
+  interface Window {
+    __wakeWordTrainerMac?: { dataFolderPicker?: boolean };
+    webkit?: {
+      messageHandlers?: {
+        wakeWordTrainerStorage?: { postMessage: (message: unknown) => void };
+      };
+    };
+  }
+}
+
 const emptyTraining = (): TrainingState => ({ running: false, exit_code: null, log_lines: [] });
 const emptySamples = (): SamplesPayload => ({ personal: [], negative: [], personal_count: 0, negative_count: 0 });
 const emptyCaptured = (): CapturedPayload => ({ items: [], captured_count: 0, personal_count: 0, negative_count: 0 });
@@ -90,6 +101,11 @@ export const trainer = reactive({
   trimBucket: "personal" as SampleBucket,
   toast: { message: "", tone: "success", serial: 0 } as ToastState,
 });
+
+export const macDataFolderPickerAvailable = Boolean(
+  window.__wakeWordTrainerMac?.dataFolderPicker
+  && window.webkit?.messageHandlers?.wakeWordTrainerStorage,
+);
 
 let autoTimer = 0;
 let trainingTimer = 0;
@@ -472,6 +488,15 @@ export async function refreshManagedData(): Promise<ManagedDataPayload> {
   } finally {
     setBusy("data", false);
   }
+}
+
+export function chooseDataDirectory(): void {
+  const handler = window.webkit?.messageHandlers?.wakeWordTrainerStorage;
+  if (!macDataFolderPickerAvailable || !handler) {
+    notify("Open this page in the WakeWord Trainer Mac app to change the data folder.", "warning");
+    return;
+  }
+  handler.postMessage({ action: "choose" });
 }
 
 export async function deleteManagedData(item: ManagedDataItem): Promise<void> {

@@ -35,6 +35,7 @@ rsync -a --delete \
   --exclude='.cache/' \
   --exclude='.recorder-venv/' \
   --exclude='.venv/' \
+  --exclude='.wake_word_samples.build/' \
   --exclude='frontend/node_modules/' \
   --exclude='__pycache__/' \
   --exclude='*.pyc' \
@@ -58,6 +59,8 @@ rsync -a --delete \
   --exclude='nanowakeword/' \
   --exclude='tools/nanowakeword-trainer/' \
   --exclude='generated_samples/' \
+  --exclude='generated_negative_samples/' \
+  --exclude='generated_negative_features/' \
   --exclude='generated_augmented_features/' \
   --exclude='personal_augmented_features/' \
   --exclude='reviewed_negative_features/' \
@@ -67,6 +70,7 @@ rsync -a --delete \
   --exclude='voice-bank/' \
   --exclude='mit_rirs/' \
   --exclude='negative_datasets/' \
+  --exclude='shared_feature_banks/' \
   --exclude='audioset/' \
   --exclude='audioset_16k/' \
   --exclude='fma/' \
