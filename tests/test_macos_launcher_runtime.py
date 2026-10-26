@@ -116,12 +116,27 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
         writable_index = implementation.index(
             "let writablePermissions = (originalPermissions ?? 0o600) | 0o200"
         )
-        open_index = implementation.index("FileHandle(forWritingTo: destination)")
+        open_index = implementation.index(
+            "let outputDescriptor = Darwin.open(destination.path, O_WRONLY | O_TRUNC)"
+        )
         restore_index = implementation.index(
             "[.posixPermissions: originalPermissions]", open_index
         )
         self.assertLess(writable_index, open_index)
         self.assertLess(open_index, restore_index)
+
+    def test_data_migration_uses_a_fixed_size_native_copy_buffer(self):
+        start = self.launcher.index("private func copyRegularFile(")
+        end = self.launcher.index(
+            "private func rewriteMovedVirtualEnvironmentReferences", start
+        )
+        implementation = self.launcher[start:end]
+
+        self.assertIn("let bufferSize = 8 * 1024 * 1024", implementation)
+        self.assertIn("UnsafeMutableRawPointer.allocate(", implementation)
+        self.assertIn("Darwin.read(inputDescriptor, buffer, bufferSize)", implementation)
+        self.assertIn("Darwin.write(", implementation)
+        self.assertNotIn("input.read(upToCount:", implementation)
 
     def test_termination_reply_runs_in_appkit_modal_run_loop(self):
         start = self.launcher.index("func applicationShouldTerminate(")

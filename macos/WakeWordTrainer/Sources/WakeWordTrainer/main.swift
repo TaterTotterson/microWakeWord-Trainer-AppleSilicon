@@ -800,22 +800,76 @@ private final class BackendManager {
             throw LauncherError("Could not create copied data file: \(destination.lastPathComponent)")
         }
 
-        let input = try FileHandle(forReadingFrom: source)
-        let output = try FileHandle(forWritingTo: destination)
-        do {
-            while true {
-                let chunk = try input.read(upToCount: 8 * 1024 * 1024) ?? Data()
-                if chunk.isEmpty { break }
-                try output.write(contentsOf: chunk)
-                onProgress(Int64(chunk.count))
+        let inputDescriptor = Darwin.open(source.path, O_RDONLY)
+        guard inputDescriptor >= 0 else {
+            let errorCode = errno
+            throw LauncherError(
+                "Could not read \(source.lastPathComponent): \(String(cString: strerror(errorCode)))"
+            )
+        }
+        defer { _ = Darwin.close(inputDescriptor) }
+
+        let outputDescriptor = Darwin.open(destination.path, O_WRONLY | O_TRUNC)
+        guard outputDescriptor >= 0 else {
+            let errorCode = errno
+            throw LauncherError(
+                "Could not write \(destination.lastPathComponent): \(String(cString: strerror(errorCode)))"
+            )
+        }
+        defer { _ = Darwin.close(outputDescriptor) }
+
+        // A fixed native buffer keeps memory usage flat even when the trainer data
+        // folder contains hundreds of gigabytes. Foundation Data chunks can remain
+        // in a long-lived background thread's autorelease pool until copying ends.
+        let bufferSize = 8 * 1024 * 1024
+        let buffer = UnsafeMutableRawPointer.allocate(
+            byteCount: bufferSize,
+            alignment: MemoryLayout<UInt8>.alignment
+        )
+        defer { buffer.deallocate() }
+
+        while true {
+            var bytesRead: Int
+            repeat {
+                bytesRead = Darwin.read(inputDescriptor, buffer, bufferSize)
+            } while bytesRead < 0 && errno == EINTR
+
+            if bytesRead == 0 { break }
+            guard bytesRead > 0 else {
+                let errorCode = errno
+                throw LauncherError(
+                    "Could not read \(source.lastPathComponent): \(String(cString: strerror(errorCode)))"
+                )
             }
-            try output.synchronize()
-            try input.close()
-            try output.close()
-        } catch {
-            try? input.close()
-            try? output.close()
-            throw error
+
+            var bytesWritten = 0
+            while bytesWritten < bytesRead {
+                let result = Darwin.write(
+                    outputDescriptor,
+                    buffer.advanced(by: bytesWritten),
+                    bytesRead - bytesWritten
+                )
+                if result < 0 && errno == EINTR { continue }
+                guard result > 0 else {
+                    let errorCode = errno
+                    throw LauncherError(
+                        "Could not write \(destination.lastPathComponent): \(String(cString: strerror(errorCode)))"
+                    )
+                }
+                bytesWritten += result
+            }
+            onProgress(Int64(bytesRead))
+        }
+
+        var syncResult: Int32
+        repeat {
+            syncResult = Darwin.fsync(outputDescriptor)
+        } while syncResult != 0 && errno == EINTR
+        guard syncResult == 0 else {
+            let errorCode = errno
+            throw LauncherError(
+                "Could not finish writing \(destination.lastPathComponent): \(String(cString: strerror(errorCode)))"
+            )
         }
 
         if let originalPermissions {

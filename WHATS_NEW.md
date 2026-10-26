@@ -1,3 +1,3 @@
-- Fixed data-folder moves failing when Git caches contain intentionally read-only pack files.
-- Copied files remain writable during transfer and have their original permissions restored after the copy completes.
-- The previous data folder still remains active if copying or verification cannot finish safely.
+- Fixed excessive memory growth while moving very large trainer data folders.
+- File transfers now reuse a fixed 8 MB buffer, keeping memory essentially constant even for hundreds of gigabytes of data.
+- The existing permission handling and safe rollback behavior remain intact throughout the move.
