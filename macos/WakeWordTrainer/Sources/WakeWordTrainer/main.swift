@@ -784,12 +784,14 @@ private final class BackendManager {
     ) throws {
         let fileManager = FileManager.default
         let attributes = try fileManager.attributesOfItem(atPath: source.path)
-        let creationAttributes: [FileAttributeKey: Any]
-        if let permissions = attributes[.posixPermissions] {
-            creationAttributes = [.posixPermissions: permissions]
-        } else {
-            creationAttributes = [:]
-        }
+        let originalPermissions = (attributes[.posixPermissions] as? NSNumber)?.intValue
+        // Some caches, especially Git pack files, are intentionally read-only.
+        // Keep the destination writable until its contents have been copied, then
+        // restore the source permissions below.
+        let writablePermissions = (originalPermissions ?? 0o600) | 0o200
+        let creationAttributes: [FileAttributeKey: Any] = [
+            .posixPermissions: writablePermissions
+        ]
         guard fileManager.createFile(
             atPath: destination.path,
             contents: nil,
@@ -816,6 +818,12 @@ private final class BackendManager {
             throw error
         }
 
+        if let originalPermissions {
+            try fileManager.setAttributes(
+                [.posixPermissions: originalPermissions],
+                ofItemAtPath: destination.path
+            )
+        }
         var dates: [FileAttributeKey: Any] = [:]
         if let modified = attributes[.modificationDate] { dates[.modificationDate] = modified }
         if let created = attributes[.creationDate] { dates[.creationDate] = created }

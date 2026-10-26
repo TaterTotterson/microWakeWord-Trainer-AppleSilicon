@@ -1,3 +1,3 @@
-- Choose a custom trainer data folder from the Data tab or menu bar, including a folder on an external drive.
-- Moving data now shows clear confirmation and progress while the trainer safely copies and verifies everything before switching locations.
-- Your selected location persists across launches, with helpful guidance if an external drive is disconnected.
+- Fixed data-folder moves failing when Git caches contain intentionally read-only pack files.
+- Copied files remain writable during transfer and have their original permissions restored after the copy completes.
+- The previous data folder still remains active if copying or verification cannot finish safely.

@@ -106,6 +106,23 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
         self.assertIn('"shared_feature_banks/"', self.launcher)
         self.assertIn('"generated_negative_samples/"', self.launcher)
 
+    def test_data_migration_copies_read_only_files_before_restoring_permissions(self):
+        start = self.launcher.index("private func copyRegularFile(")
+        end = self.launcher.index(
+            "private func rewriteMovedVirtualEnvironmentReferences", start
+        )
+        implementation = self.launcher[start:end]
+
+        writable_index = implementation.index(
+            "let writablePermissions = (originalPermissions ?? 0o600) | 0o200"
+        )
+        open_index = implementation.index("FileHandle(forWritingTo: destination)")
+        restore_index = implementation.index(
+            "[.posixPermissions: originalPermissions]", open_index
+        )
+        self.assertLess(writable_index, open_index)
+        self.assertLess(open_index, restore_index)
+
     def test_termination_reply_runs_in_appkit_modal_run_loop(self):
         start = self.launcher.index("func applicationShouldTerminate(")
         end = self.launcher.index("private func startRecoveryWatchdog", start)
