@@ -14,7 +14,11 @@ WATCHER = ROOT / "watcher.sh"
 
 class WatcherTests(unittest.TestCase):
     def run_dry_watcher(
-        self, *, retry_failed: bool = False, recovered_failed: bool = False
+        self,
+        *,
+        retry_failed: bool = False,
+        recovered_failed: bool = False,
+        recovered_boundary: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         issues = [
             {
@@ -64,7 +68,7 @@ class WatcherTests(unittest.TestCase):
 
             catalog_repo = temp / "catalog"
             if recovered_failed:
-                catalog_dir = catalog_repo / "microWakeWordsV8"
+                catalog_dir = catalog_repo / "microWakeWordsV9"
                 catalog_dir.mkdir(parents=True)
                 base = catalog_dir / "failed_before"
                 for suffix in (
@@ -74,7 +78,10 @@ class WatcherTests(unittest.TestCase):
                     ".oww.onnx",
                     ".nww.cnn.onnx",
                     ".nww.gru.onnx",
+                    ".boundary.tflite",
                 ):
+                    if suffix == ".boundary.tflite" and not recovered_boundary:
+                        continue
                     Path(f"{base}{suffix}").write_text("complete", encoding="utf-8")
 
             gh = fake_bin / "gh"
@@ -119,7 +126,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         output = result.stdout
         self.assertIn("TaterTotterson/Tater-Wake-Words", output)
-        self.assertIn("microWakeWordsV8", output)
+        self.assertIn("microWakeWordsV9", output)
         self.assertIn("#11 'oldest request'", output)
         self.assertIn("#12 'resume me'", output)
         self.assertIn("#15 'newest request'", output)
@@ -139,6 +146,14 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("#13 'failed before'", result.stdout)
 
+    def test_package_without_boundary_does_not_reclaim_failed_request(self) -> None:
+        result = self.run_dry_watcher(
+            recovered_failed=True,
+            recovered_boundary=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("#13 'failed before'", result.stdout)
+
     def test_diverged_catalog_regenerates_manifest_and_pushes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
@@ -152,8 +167,8 @@ class WatcherTests(unittest.TestCase):
             self.git("checkout", "-b", "main", cwd=seed)
             self.configure_git(seed)
 
-            (seed / "microWakeWordsV8").mkdir()
-            (seed / "microWakeWordsV8" / "base.marker").write_text(
+            (seed / "microWakeWordsV9").mkdir()
+            (seed / "microWakeWordsV9" / "base.marker").write_text(
                 "base\n", encoding="utf-8"
             )
             (seed / "scripts").mkdir()
@@ -161,7 +176,7 @@ class WatcherTests(unittest.TestCase):
             generator.write_text(
                 "import json\n"
                 "from pathlib import Path\n"
-                "names = sorted(p.stem for p in Path('microWakeWordsV8').glob('*.marker'))\n"
+                "names = sorted(p.stem for p in Path('microWakeWordsV9').glob('*.marker'))\n"
                 "Path('wake_word_manifest.json').write_text(json.dumps(names) + '\\n')\n",
                 encoding="utf-8",
             )
@@ -177,7 +192,7 @@ class WatcherTests(unittest.TestCase):
 
             self.git("clone", str(origin), str(catalog), cwd=temp)
             self.configure_git(catalog)
-            (catalog / "microWakeWordsV8" / "bart.marker").write_text(
+            (catalog / "microWakeWordsV9" / "bart.marker").write_text(
                 "bart\n", encoding="utf-8"
             )
             self.run_generator(catalog)
@@ -186,7 +201,7 @@ class WatcherTests(unittest.TestCase):
 
             self.git("clone", str(origin), str(updater), cwd=temp)
             self.configure_git(updater)
-            (updater / "microWakeWordsV8" / "santa.marker").write_text(
+            (updater / "microWakeWordsV9" / "santa.marker").write_text(
                 "santa\n", encoding="utf-8"
             )
             self.run_generator(updater)

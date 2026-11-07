@@ -71,10 +71,11 @@ cd microWakeWord-Trainer-AppleSilicon
 `watcher.sh` is the headless automation path for the dedicated training Mac. It
 polls open `mww:` issues in
 [`TaterTotterson/Tater-Wake-Words`](https://github.com/TaterTotterson/Tater-Wake-Words),
-trains MWW, OWW, NanoWakeWord CNN, and NanoWakeWord GRU, commits the six V8
-artifacts plus the catalog manifest, comments on the issue, and closes it. V8
-uses one canonical `.wake-bundle.json` in Tater and keeps a separate
-`.esphome.json` for ESPHome microWakeWord.
+trains MWW, OWW, NanoWakeWord CNN, NanoWakeWord GRU, and the wake-boundary
+model, commits the seven V9 artifacts plus the catalog manifest, comments on
+the issue, and closes it. V9 uses one schema-v4 `.wake-bundle.json` in Tater,
+including the boundary-model metadata, and keeps a separate `.esphome.json`
+for ESPHome microWakeWord. Existing V8 packages remain unchanged.
 
 The watcher does not depend on a continuously connected GitHub Actions runner.
 Local training continues through a temporary network outage. Failed pushes are
@@ -128,7 +129,7 @@ Useful overrides include:
 
 - `MW_POLL_SECONDS=60` — issue polling interval.
 - `MW_CATALOG_REPO_DIR=/path/to/checkout` — dedicated catalog checkout.
-- `MW_CATALOG_DIR=microWakeWordsV8` — destination catalog folder.
+- `MW_CATALOG_DIR=microWakeWordsV9` — destination schema-v4 catalog folder.
 - `TATER_WAKE_TMP_ROOT=/path/to/temp` — temp files, caches, and watcher state.
 - `TATER_WAKE_DATA_DIR=/path/to/data` — persistent trainer datasets.
 - `MW_RETRY_FAILED=1` — include issues labeled `mww-failed`; leave this disabled
@@ -397,6 +398,7 @@ trained_wake_words/<wake_word>.oww.onnx         # openWakeWord classifier
 trained_wake_words/<wake_word>.oww.verifier.pkl # when positive + negative clips exist
 trained_wake_words/<wake_word>.nww.cnn.onnx     # NanoWakeWord CNN classifier
 trained_wake_words/<wake_word>.nww.gru.onnx     # NanoWakeWord GRU classifier
+trained_wake_words/<wake_word>.boundary.tflite  # detector-independent wake-end model
 trained_wake_words/<wake_word>.wake-bundle.json
 trained_wake_words/<wake_word>.esphome.json     # MWW-only ESPHome manifest
 ```

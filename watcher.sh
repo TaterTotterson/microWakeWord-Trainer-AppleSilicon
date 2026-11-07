@@ -22,7 +22,7 @@ fi
 MW_ISSUE_REPO="${MW_ISSUE_REPO:-TaterTotterson/Tater-Wake-Words}"
 MW_CATALOG_REPO="${MW_CATALOG_REPO:-$MW_ISSUE_REPO}"
 MW_CATALOG_BRANCH="${MW_CATALOG_BRANCH:-main}"
-MW_CATALOG_DIR="${MW_CATALOG_DIR:-microWakeWordsV8}"
+MW_CATALOG_DIR="${MW_CATALOG_DIR:-microWakeWordsV9}"
 MW_POLL_SECONDS="${MW_POLL_SECONDS:-60}"
 MW_LABEL_PROCESSING="${MW_LABEL_PROCESSING:-mww-processing}"
 MW_LABEL_DONE="${MW_LABEL_DONE:-mww-added}"
@@ -224,7 +224,7 @@ sync_catalog_checkout() {
   fi
 
   if [[ -n "$(git -C "$MW_CATALOG_REPO_DIR" status --porcelain)" ]]; then
-    # This is a watcher-owned checkout. Dirty V8 files can be the complete or
+    # This is a watcher-owned checkout. Dirty catalog files can be the complete or
     # partial output of a run whose connection failed before commit/push. The
     # matching issue will validate and recover them instead of deleting them.
     log "Catalog checkout contains interrupted local work; preserving it for recovery"
@@ -345,6 +345,7 @@ for issue in sorted(issues, key=lambda item: (item.get("createdAt", ""), item.ge
                 ".oww.onnx",
                 ".nww.cnn.onnx",
                 ".nww.gru.onnx",
+                ".boundary.tflite",
             )
         )
         # A publish failure can label the issue failed after all training has
@@ -361,7 +362,7 @@ catalog_package_is_complete() {
   local safe_word="$1"
   local base="$MW_CATALOG_REPO_DIR/$MW_CATALOG_DIR/$safe_word"
   local suffix
-  for suffix in .wake-bundle.json .esphome.json .tflite .oww.onnx .nww.cnn.onnx .nww.gru.onnx; do
+  for suffix in .wake-bundle.json .esphome.json .tflite .oww.onnx .nww.cnn.onnx .nww.gru.onnx .boundary.tflite; do
     [[ -f "${base}${suffix}" ]] || return 1
   done
 
@@ -395,6 +396,7 @@ recover_catalog_package() {
       "${base}.oww.onnx" \
       "${base}.nww.cnn.onnx" \
       "${base}.nww.gru.onnx" \
+      "${base}.boundary.tflite" \
       wake_word_manifest.json
     if ! git diff --cached --quiet; then
       log "Recovering completed local artifacts for $safe_word"
