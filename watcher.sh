@@ -31,6 +31,9 @@ MW_RETRY_FAILED="${MW_RETRY_FAILED:-0}"
 MW_DRY_RUN="${MW_DRY_RUN:-0}"
 MW_ONCE="${MW_ONCE:-0}"
 MW_DEBUG="${MW_DEBUG:-0}"
+MW_WATCHER_ID="${MW_WATCHER_ID:-}"
+MW_CLAIM_TTL_SECONDS="${MW_CLAIM_TTL_SECONDS:-86400}"
+MW_CLAIM_REFRESH_SECONDS="${MW_CLAIM_REFRESH_SECONDS:-300}"
 
 MW_EXTERNAL_ROOT="${TATER_WAKE_EXTERNAL_ROOT:-$(dirname "$ROOT_DIR")}"
 MW_TMP_ROOT="${TATER_WAKE_TMP_ROOT:-${MW_EXTERNAL_ROOT}/tater-wake-tmp}"
@@ -74,9 +77,49 @@ fi
 
 mkdir -p "$MW_STATE_DIR" "$MW_TMP_ROOT/tmp" "$(dirname "$MW_CATALOG_REPO_DIR")"
 
+if [[ ! "$MW_CLAIM_TTL_SECONDS" =~ ^[1-9][0-9]*$ ]] || \
+    [[ "$MW_CLAIM_TTL_SECONDS" -lt 600 ]]; then
+  log "ERROR: MW_CLAIM_TTL_SECONDS must be at least 600"
+  exit 1
+fi
+if [[ ! "$MW_CLAIM_REFRESH_SECONDS" =~ ^[1-9][0-9]*$ ]] || \
+    [[ "$MW_CLAIM_REFRESH_SECONDS" -ge "$MW_CLAIM_TTL_SECONDS" ]]; then
+  log "ERROR: MW_CLAIM_REFRESH_SECONDS must be positive and shorter than the claim TTL"
+  exit 1
+fi
+
+if [[ -z "$MW_WATCHER_ID" ]]; then
+  watcher_token_file="$MW_STATE_DIR/watcher-id"
+  watcher_token=""
+  if [[ -f "$watcher_token_file" ]]; then
+    watcher_token="$(tr -cd 'A-Za-z0-9' < "$watcher_token_file")"
+  fi
+  if [[ -z "$watcher_token" ]]; then
+    watcher_token="$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
+    printf '%s\n' "$watcher_token" > "$watcher_token_file"
+    chmod 600 "$watcher_token_file"
+  fi
+  watcher_host="$(hostname -s 2>/dev/null || printf 'mac')"
+  watcher_host="$(printf '%s' "$watcher_host" | tr -cs 'A-Za-z0-9._-' '-')"
+  MW_WATCHER_ID="${watcher_host}-${watcher_token}"
+fi
+if [[ ! "$MW_WATCHER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$ ]]; then
+  log "ERROR: MW_WATCHER_ID must use 1-96 letters, numbers, dots, underscores, or hyphens"
+  exit 1
+fi
+
 LOCK_DIR="$MW_STATE_DIR/lock"
+CLAIM_TOOL="$ROOT_DIR/watcher_claims.sh"
 CHILD_PID=""
+CLAIM_HEARTBEAT_PID=""
+CURRENT_CLAIM_ISSUE=""
 STOP_REQUESTED=0
+WATCHER_PID=$$
+
+if [[ ! -f "$CLAIM_TOOL" ]]; then
+  log "ERROR: Cross-Mac claim helper is missing: $CLAIM_TOOL"
+  exit 1
+fi
 
 release_lock() {
   if [[ -d "$LOCK_DIR" ]]; then
@@ -93,7 +136,31 @@ request_stop() {
   fi
 }
 
+stop_claim_heartbeat() {
+  if [[ -n "$CLAIM_HEARTBEAT_PID" ]] && \
+      kill -0 "$CLAIM_HEARTBEAT_PID" >/dev/null 2>&1; then
+    kill -TERM "$CLAIM_HEARTBEAT_PID" >/dev/null 2>&1 || true
+    wait "$CLAIM_HEARTBEAT_PID" >/dev/null 2>&1 || true
+  fi
+  CLAIM_HEARTBEAT_PID=""
+}
+
+release_current_claim() {
+  stop_claim_heartbeat
+  [[ -n "$CURRENT_CLAIM_ISSUE" ]] || return 0
+  local release_output=""
+  if release_output="$(/bin/bash "$CLAIM_TOOL" release \
+      "$MW_CATALOG_REPO_DIR" "$CURRENT_CLAIM_ISSUE" \
+      "$MW_WATCHER_ID" "$MW_CLAIM_TTL_SECONDS" 2>/dev/null)"; then
+    debug "Released claim for #$CURRENT_CLAIM_ISSUE: $release_output"
+  else
+    log "WARNING: Could not release claim for #$CURRENT_CLAIM_ISSUE; its lease will expire automatically"
+  fi
+  CURRENT_CLAIM_ISSUE=""
+}
+
 on_exit() {
+  release_current_claim
   release_lock
 }
 
@@ -127,6 +194,61 @@ acquire_lock() {
 }
 
 acquire_lock
+
+start_claim_heartbeat() {
+  local issue_number="$1"
+  local initial_expiry=$(( $(date +%s) + MW_CLAIM_TTL_SECONDS ))
+  (
+    local heartbeat_sleep_pid=""
+    local lease_expires="$initial_expiry"
+    local renew_output renew_rc now
+
+    stop_heartbeat_loop() {
+      if [[ -n "$heartbeat_sleep_pid" ]] && \
+          kill -0 "$heartbeat_sleep_pid" >/dev/null 2>&1; then
+        kill -TERM "$heartbeat_sleep_pid" >/dev/null 2>&1 || true
+        wait "$heartbeat_sleep_pid" >/dev/null 2>&1 || true
+      fi
+      exit 0
+    }
+
+    # Do not inherit the watcher's EXIT/HUP behavior in this helper process.
+    # Its TERM handler also reaps the active sleep so it cannot hold open the
+    # watcher's output pipes after a job completes.
+    trap - EXIT HUP
+    trap stop_heartbeat_loop INT TERM
+
+    while true; do
+      sleep "$MW_CLAIM_REFRESH_SECONDS" &
+      heartbeat_sleep_pid=$!
+      wait "$heartbeat_sleep_pid" || exit 0
+      heartbeat_sleep_pid=""
+      renew_output=""
+      renew_rc=0
+      renew_output="$(/bin/bash "$CLAIM_TOOL" renew \
+        "$MW_CATALOG_REPO_DIR" "$issue_number" \
+        "$MW_WATCHER_ID" "$MW_CLAIM_TTL_SECONDS" 2>/dev/null)" || renew_rc=$?
+      now="$(date +%s)"
+      if [[ $renew_rc -eq 0 ]]; then
+        lease_expires=$((now + MW_CLAIM_TTL_SECONDS))
+        debug "Renewed claim for #$issue_number: $renew_output"
+        continue
+      fi
+      if [[ $renew_rc -eq 76 ]]; then
+        log "ERROR: Claim for #$issue_number was lost; stopping this watcher before another Mac trains the same issue"
+        kill -TERM "$WATCHER_PID" >/dev/null 2>&1 || true
+        exit 0
+      fi
+      log "WARNING: Could not renew claim for #$issue_number; will retry while the current lease is safe"
+      if [[ $((now + MW_CLAIM_REFRESH_SECONDS + 60)) -ge $lease_expires ]]; then
+        log "ERROR: Claim for #$issue_number is nearing expiry; stopping to prevent duplicate training"
+        kill -TERM "$WATCHER_PID" >/dev/null 2>&1 || true
+        exit 0
+      fi
+    done
+  ) &
+  CLAIM_HEARTBEAT_PID=$!
+}
 
 sleep_until_next_poll() {
   local remaining="$MW_POLL_SECONDS"
@@ -406,13 +528,10 @@ recover_catalog_package() {
   )
 }
 
-run_issue() {
+run_claimed_issue() {
   local issue_number="$1" phrase="$2" safe_word="$3"
   local event_file="$MW_STATE_DIR/issue-${issue_number}.json"
 
-  if ! sync_catalog_checkout; then
-    return 75
-  fi
   if ! recover_catalog_package "$safe_word"; then
     log "Could not publish recovered artifacts for #$issue_number; will retry"
     return 75
@@ -453,12 +572,46 @@ run_issue() {
   return "$train_rc"
 }
 
+run_issue() {
+  local issue_number="$1" phrase="$2" safe_word="$3"
+  local claim_output="" claim_rc=0 issue_rc=0
+
+  if ! sync_catalog_checkout; then
+    return 75
+  fi
+
+  claim_output="$(/bin/bash "$CLAIM_TOOL" acquire \
+    "$MW_CATALOG_REPO_DIR" "$issue_number" \
+    "$MW_WATCHER_ID" "$MW_CLAIM_TTL_SECONDS" 2>/dev/null)" || claim_rc=$?
+  if [[ $claim_rc -eq 76 ]]; then
+    log "Skipping #$issue_number; another Mac already holds its claim ($claim_output)"
+    if [[ -n "$(git -C "$MW_CATALOG_REPO_DIR" status --porcelain)" ]]; then
+      log "Interrupted local catalog work is still present; deferring other requests until it can be recovered safely"
+      return 75
+    fi
+    return 76
+  fi
+  if [[ $claim_rc -ne 0 ]]; then
+    log "Could not claim #$issue_number; GitHub or the catalog remote is unavailable"
+    return 75
+  fi
+
+  CURRENT_CLAIM_ISSUE="$issue_number"
+  log "Claimed #$issue_number as $MW_WATCHER_ID"
+  start_claim_heartbeat "$issue_number"
+  run_claimed_issue "$issue_number" "$phrase" "$safe_word" || issue_rc=$?
+  release_current_claim
+  return "$issue_rc"
+}
+
 log "Starting independent wake-word issue watcher"
 log "Issue repo:       $MW_ISSUE_REPO"
 log "Catalog checkout: $MW_CATALOG_REPO_DIR"
 log "Catalog path:     $MW_CATALOG_DIR"
 log "Trainer:          $ROOT_DIR"
 log "Training data:    $MW_TRAINER_DATA_DIR"
+log "Watcher ID:       $MW_WATCHER_ID"
+log "Claim lease:      ${MW_CLAIM_TTL_SECONDS}s (refresh ${MW_CLAIM_REFRESH_SECONDS}s)"
 log "Poll interval:    ${MW_POLL_SECONDS}s"
 log "Retry failed:     $MW_RETRY_FAILED"
 log "Dry run:          $MW_DRY_RUN"

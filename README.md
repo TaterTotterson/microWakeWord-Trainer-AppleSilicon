@@ -85,6 +85,15 @@ the derived catalog manifest. Issues left with `mww-processing`, or labeled
 `mww-failed` despite having a complete local package, are reclaimed after a
 restart without retraining.
 
+Multiple Macs can run the watcher against the same issue queue. Before training,
+each watcher atomically creates a temporary `mww-watcher-claim-*` Git tag in the
+catalog repository. A Mac that loses the claim skips that issue and continues to
+the next one. The claim is renewed while training and deleted when the job exits;
+the same Mac immediately renews its claim after a restart. An abandoned claim
+expires after 24 hours by default so another Mac can recover it. These
+coordination tags are not release/version tags and do not trigger a workflow or
+trainer release build.
+
 Authenticate once with GitHub CLI:
 
 ```bash
@@ -132,6 +141,11 @@ Useful overrides include:
 - `MW_CATALOG_DIR=microWakeWordsV9` — destination schema-v4 catalog folder.
 - `TATER_WAKE_TMP_ROOT=/path/to/temp` — temp files, caches, and watcher state.
 - `TATER_WAKE_DATA_DIR=/path/to/data` — persistent trainer datasets.
+- `MW_WATCHER_ID=mac-studio` — optional readable identity; each Mac receives a
+  stable generated identity automatically when this is omitted.
+- `MW_CLAIM_TTL_SECONDS=86400` — abandoned cross-Mac claim expiry (24 hours by
+  default; active training renews it continuously).
+- `MW_CLAIM_REFRESH_SECONDS=300` — active-claim renewal interval.
 - `MW_RETRY_FAILED=1` — include issues labeled `mww-failed`; leave this disabled
   for the continuous service to avoid repeatedly training a permanently broken
   request.
