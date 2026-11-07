@@ -255,6 +255,11 @@ def omnivoice_stability_args() -> list[str]:
     ]
 
 
+def omnivoice_batch_command(python: Path) -> list[str]:
+    """Run the module without relying on a relocatable-unsafe venv shebang."""
+    return [str(python), "-m", "omnivoice.cli.infer_batch"]
+
+
 def read_pcm_metrics(path: Path) -> tuple[float, float, float]:
     try:
         with wave.open(str(path), "rb") as wav_file:
@@ -435,7 +440,7 @@ class Generator:
     def _generate_omni_bank(self, count: int, start: int, destination: Path) -> list[dict]:
         if count <= 0:
             return []
-        self.ensure_environment(ENGINE_OMNIVOICE)
+        omnivoice_python = self.ensure_environment(ENGINE_OMNIVOICE)
         prompt_dir = destination / ".omnivoice-prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
         # Generate unconstrained OmniVoice carriers natively. Explicit multi-
@@ -454,8 +459,7 @@ class Generator:
         write_jsonl(prompt_input, prompt_entries)
         prompt_input_flag = "--test_list"
         prompt_batch_flag = "--batch_size"
-        prompt_command = [
-            str(self.tts_envs / ENGINE_OMNIVOICE / "bin" / "omnivoice-infer-batch"),
+        prompt_command = omnivoice_batch_command(omnivoice_python) + [
             "--model",
             OMNIVOICE_MODEL,
             prompt_input_flag,
@@ -530,8 +534,7 @@ class Generator:
             )
         clone_input = destination / f"omni_clone_{start:04d}.jsonl"
         write_jsonl(clone_input, entries)
-        clone_command = [
-            str(self.tts_envs / ENGINE_OMNIVOICE / "bin" / "omnivoice-infer-batch"),
+        clone_command = omnivoice_batch_command(omnivoice_python) + [
             "--model",
             OMNIVOICE_MODEL,
             "--test_list",
@@ -1036,8 +1039,7 @@ class Generator:
         write_jsonl(input_path, entries)
         python = self.ensure_environment(engine)
         if engine == ENGINE_OMNIVOICE:
-            generation_command = [
-                str(self.tts_envs / engine / "bin" / "omnivoice-infer-batch"),
+            generation_command = omnivoice_batch_command(python) + [
                 "--model",
                 OMNIVOICE_MODEL,
                 "--test_list",
@@ -1230,8 +1232,7 @@ class Generator:
         write_jsonl(input_path, entries)
         python = self.ensure_environment(engine)
         if engine == ENGINE_OMNIVOICE:
-            command = [
-                str(self.tts_envs / engine / "bin" / "omnivoice-infer-batch"),
+            command = omnivoice_batch_command(python) + [
                 "--model",
                 OMNIVOICE_MODEL,
                 "--test_list",

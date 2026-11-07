@@ -675,7 +675,8 @@ private final class BackendManager {
         let knownDataNames: Set<String> = [
             ".cache", ".venv", ".wake_word_samples.build",
             "audioset", "audioset_16k", "auto_train_config.json", "auto_train_models",
-            "auto_train_state.json", "captured_audio", "chime", "chime_16k",
+            "auto_train_state.json", "boundary_negative_features", "boundary_negative_samples",
+            "boundary_training_parameters.yaml", "captured_audio", "chime", "chime_16k",
             "chime_corrupted_files.log", "fma", "fma_16k", "fma_corrupted_files.log",
             "generated_augmented_features", "generated_negative_features", "generated_negative_samples",
             "generated_samples", "micro-wake-word", "mit_rirs", "nanowakeword",
@@ -683,7 +684,7 @@ private final class BackendManager {
             "personal_augmented_features", "personal_samples", "piper-sample-generator",
             "recorder_training.log", "reviewed_negative_features", "shared_feature_banks",
             "tools", "trained_models", "trained_wake_words", "training_parameters.yaml",
-            "trim_history", "tts-envs", "voice-bank", "wham", "wham_16k",
+            "trim_history", "tts-envs", "voice-bank", "wake_word_library", "wham", "wham_16k",
             "wham_corrupted_files.log"
         ]
 
@@ -992,9 +993,11 @@ private final class BackendManager {
             "auto_train_models/",
             "recorder_training.log",
             "training_parameters.yaml",
+            "boundary_training_parameters.yaml",
             "fma_corrupted_files.log",
             "trained_wake_words/",
             "trained_models/",
+            "wake_word_library/",
             "output/",
             "openwakeword/",
             "tools/openwakeword-trainer/",
@@ -1003,6 +1006,8 @@ private final class BackendManager {
             "generated_samples/",
             "generated_negative_samples/",
             "generated_negative_features/",
+            "boundary_negative_samples/",
+            "boundary_negative_features/",
             "generated_augmented_features/",
             "personal_augmented_features/",
             "reviewed_negative_features/",

@@ -8,6 +8,7 @@ from microwakeword.audio.augmentation import Augmentation
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.spectrograms import SpectrogramGeneration
 from pathlib import Path
+from training_progress import tracked_generator
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True, write_through=True)
@@ -92,6 +93,25 @@ if generated_negative_dir.exists() and any(generated_negative_dir.glob("*.wav"))
 else:
     print("ℹ️ No generated near-miss samples selected")
 
+# Wake+immediate-speech clips are the essential boundary supervision. They are
+# negative only at the end of the clip; paired wake-only clips remain positive,
+# teaching the streaming network to peak at the acoustic phrase endpoint and
+# decay as soon as command speech begins.
+clips_boundary_negative = None
+boundary_negative_dir = Path("./boundary_negative_samples")
+if boundary_negative_dir.exists() and any(boundary_negative_dir.glob("*.wav")):
+    clips_boundary_negative = Clips(
+        input_directory=str(boundary_negative_dir),
+        file_pattern="*.wav",
+        max_clip_duration_s=5,
+        remove_silence=False,
+        random_split_seed=10,
+        split_count=0.1,
+    )
+    print("✅ Found wake+speech endpoint hard negatives")
+else:
+    raise SystemExit("❌ Missing boundary_negative_samples; endpoint model cannot be trained")
+
 augmenter = Augmentation(
     augmentation_duration_s=3.2,
     augmentation_probabilities={
@@ -121,26 +141,42 @@ split_cfg = {
     "testing":    {"name": "test",       "repetition": 1, "slide_frames": 1},
 }
 
+
+def write_feature_mmap(*, clips, split, cfg, out_dir, source_label):
+    """Build one mmap with an exact, UI-readable feature total."""
+    spectros = SpectrogramGeneration(
+        clips=clips,
+        augmenter=augmenter,
+        slide_frames=cfg["slide_frames"],
+        step_ms=10,
+    )
+    clip_count = len(clips.split_clips[cfg["name"]])
+    total = clip_count * cfg["repetition"] * cfg["slide_frames"]
+    generator = tracked_generator(
+        spectros.spectrogram_generator(
+            split=cfg["name"],
+            repeat=cfg["repetition"],
+        ),
+        total=total,
+        stage=f"features:{source_label.lower().replace(' ', '-')}:{split}",
+        label=f"{source_label} · {split.title()} features",
+        unit="features",
+    )
+    RaggedMmap.from_generator(
+        out_dir=str(out_dir / "wakeword_mmap"),
+        sample_generator=generator,
+        batch_size=100,
+        verbose=False,
+    )
+
 # Process TTS samples
 for split, cfg in split_cfg.items():
     out_dir = out_root / split
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"🧪 Processing {split} (TTS) …")
     print("⏳ Building spectrogram mmap; first progress update can take a moment…")
-    spectros = SpectrogramGeneration(
-        clips=clips_tts,
-        augmenter=augmenter,
-        slide_frames=cfg["slide_frames"],
-        step_ms=10,
-    )
-    RaggedMmap.from_generator(
-        out_dir=str(out_dir / "wakeword_mmap"),
-        sample_generator=spectros.spectrogram_generator(
-            split=cfg["name"],
-            repeat=cfg["repetition"],
-        ),
-        batch_size=100,
-        verbose=True,
+    write_feature_mmap(
+        clips=clips_tts, split=split, cfg=cfg, out_dir=out_dir, source_label="TTS"
     )
 
 # Process personal samples if available
@@ -152,17 +188,12 @@ if clips_personal is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"🧪 Processing {split} (personal) …")
         print("⏳ Building personal spectrogram mmap; first progress update can take a moment…")
-        spectros = SpectrogramGeneration(
+        write_feature_mmap(
             clips=clips_personal,
-            augmenter=augmenter,
-            slide_frames=cfg["slide_frames"],
-            step_ms=10,
-        )
-        RaggedMmap.from_generator(
-            out_dir=str(out_dir / "wakeword_mmap"),
-            sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
-            batch_size=100,
-            verbose=True,
+            split=split,
+            cfg=cfg,
+            out_dir=out_dir,
+            source_label="Personal",
         )
 
 # Process reviewed negative samples if available
@@ -174,17 +205,12 @@ if clips_reviewed_negative is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"🧪 Processing {split} (reviewed negatives) …")
         print("⏳ Building reviewed negative spectrogram mmap; first progress update can take a moment…")
-        spectros = SpectrogramGeneration(
+        write_feature_mmap(
             clips=clips_reviewed_negative,
-            augmenter=augmenter,
-            slide_frames=cfg["slide_frames"],
-            step_ms=10,
-        )
-        RaggedMmap.from_generator(
-            out_dir=str(out_dir / "wakeword_mmap"),
-            sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
-            batch_size=100,
-            verbose=True,
+            split=split,
+            cfg=cfg,
+            out_dir=out_dir,
+            source_label="Reviewed negatives",
         )
 
 # Process generated near-miss samples if available. Clips creates deterministic
@@ -198,16 +224,26 @@ if clips_generated_negative is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"🧪 Processing {split} (generated hard negatives) …")
         print("⏳ Building generated hard-negative spectrogram mmap; first progress update can take a moment…")
-        spectros = SpectrogramGeneration(
+        write_feature_mmap(
             clips=clips_generated_negative,
-            augmenter=augmenter,
-            slide_frames=cfg["slide_frames"],
-            step_ms=10,
+            split=split,
+            cfg=cfg,
+            out_dir=out_dir,
+            source_label="Generated hard negatives",
         )
-        RaggedMmap.from_generator(
-            out_dir=str(out_dir / "wakeword_mmap"),
-            sample_generator=spectros.spectrogram_generator(split=cfg["name"], repeat=cfg["repetition"]),
-            batch_size=100,
-            verbose=True,
+
+if clips_boundary_negative is not None:
+    out_root_boundary = Path("boundary_negative_features")
+    out_root_boundary.mkdir(exist_ok=True)
+    for split, cfg in split_cfg.items():
+        out_dir = out_root_boundary / split
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"🧪 Processing {split} (wake endpoint hard negatives) …")
+        write_feature_mmap(
+            clips=clips_boundary_negative,
+            split=split,
+            cfg=cfg,
+            out_dir=out_dir,
+            source_label="Wake endpoint negatives",
         )
 print("✅ Features ready.")

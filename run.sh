@@ -74,9 +74,12 @@ if [[ ! -x "$PY" ]]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
-# Always activate (handy for PATH vars), but we still use $PY explicitly
-# shellcheck disable=SC1091
-source "$VENV_DIR/bin/activate"
+# Configure the environment without sourcing bin/activate. This remains safe
+# when REC_VENV_DIR contains spaces and we still use $PY explicitly below.
+VIRTUAL_ENV="$VENV_DIR"
+export VIRTUAL_ENV
+export PATH="$VIRTUAL_ENV/bin:$PATH"
+unset PYTHONHOME || true
 
 # Install dependencies whenever their specification changes. Existing empty
 # marker files from older releases intentionally trigger one refresh.

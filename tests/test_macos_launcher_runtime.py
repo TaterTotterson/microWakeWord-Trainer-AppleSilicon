@@ -13,6 +13,7 @@ LAUNCHER_SOURCE = (
     / "main.swift"
 )
 RUN_SCRIPT = ROOT / "run.sh"
+TRAIN_SCRIPT = ROOT / "train_microwakeword_macos.sh"
 TRAINER_SOURCE = ROOT / "trainer_server.py"
 
 
@@ -21,6 +22,7 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.launcher = LAUNCHER_SOURCE.read_text(encoding="utf-8")
         cls.run_script = RUN_SCRIPT.read_text(encoding="utf-8")
+        cls.train_script = TRAIN_SCRIPT.read_text(encoding="utf-8")
 
     def test_output_handlers_detach_at_eof(self):
         eof_guards = re.findall(
@@ -68,6 +70,12 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
         )
         self.assertIn('dependency_fingerprint > "$PIN_FILE"', self.run_script)
         self.assertNotIn('touch "$PIN_FILE"', self.run_script)
+
+    def test_virtual_environments_support_paths_with_spaces(self):
+        for script in (self.run_script, self.train_script):
+            self.assertNotRegex(script, r"(?m)^\s*source\s+.*bin/activate")
+            self.assertIn("export VIRTUAL_ENV", script)
+            self.assertIn('export PATH="$VIRTUAL_ENV/bin:$PATH"', script)
 
     def test_trainer_source_compiles(self):
         source = TRAINER_SOURCE.read_text(encoding="utf-8")

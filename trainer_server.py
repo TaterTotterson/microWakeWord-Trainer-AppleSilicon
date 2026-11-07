@@ -74,6 +74,8 @@ from wake_bundle import (
     migrate_legacy_micro_manifest,
 )
 from training_summary import build_training_summary, training_summary_log_lines
+from wake_word_library import activate_word, list_words, record_run, word_history
+from scripts_macos.training_progress import iter_progress_lines, parse_progress_line
 
 SUPPORT_DIR = Path(
     os.environ.get(
@@ -96,6 +98,24 @@ TRIM_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 TRAINED_WAKE_WORDS_DIR = Path(
     os.environ.get("TRAINED_WAKE_WORDS_DIR", str(DATA_DIR / "trained_wake_words"))
 ).resolve()
+WORD_WORKSPACE_PATHS = (
+    "personal_samples",
+    "negative_samples",
+    "captured_audio",
+    "trim_history",
+    "generated_samples",
+    ".wake_word_samples.build",
+    "generated_augmented_features",
+    "personal_augmented_features",
+    "reviewed_negative_features",
+    "generated_negative_samples",
+    "generated_negative_features",
+    "boundary_negative_samples",
+    "boundary_negative_features",
+    "trained_models",
+    "training_parameters.yaml",
+    "boundary_training_parameters.yaml",
+)
 AUTO_TRAIN_CONFIG_FILE = Path(
     os.environ.get("AUTO_TRAIN_CONFIG_FILE", str(DATA_DIR / "auto_train_config.json"))
 ).resolve()
@@ -293,6 +313,7 @@ STATE: Dict[str, Any] = {
         "log_path": None,
         "safe_word": None,
         "summary": None,
+        "progress": None,
     },
 }
 
@@ -379,6 +400,7 @@ def _managed_data_registry() -> List[Dict[str, Any]]:
         {"id": "voice_bank", "label": "Legacy voice-bank references", "category": "Voice and speech models", "description": "Reference clips left by older voice-bank generation runs.", "paths": [DATA_DIR / "voice-bank"], "rebuild_note": rebuild},
 
         {"id": "training_workspace", "label": "Model training workspace", "category": "Training results", "description": "Checkpoints, logs, and intermediate files from the latest model run.", "paths": [DATA_DIR / "trained_models"], "rebuild_note": rebuild},
+        {"id": "wake_word_library", "label": "Saved wake-word library", "category": "Training results", "description": "Per-word datasets, feature caches, profiles, immutable model snapshots, and quality history.", "paths": [DATA_DIR / "wake_word_library"], "rebuild_note": "This permanently removes saved word datasets and model history. Published live bundles are not removed."},
         {"id": "openwakeword_workspace", "label": "openWakeWord training cache", "category": "Training results", "description": "Pinned trainer source, generated clips, dependencies, and intermediate files for the companion model.", "paths": [DATA_DIR / "openwakeword", DATA_DIR / "tools" / "openwakeword-trainer"], "rebuild_note": redownload},
         {"id": "nanowakeword_workspace", "label": "NanoWakeWord training cache", "category": "Training results", "description": "Trainer source, validation audio, dependencies, features, and intermediate CNN/GRU files.", "paths": [DATA_DIR / "nanowakeword", DATA_DIR / "tools" / "nanowakeword-trainer"], "rebuild_note": redownload},
         {"id": "shared_feature_bank", "label": "Shared OWW/NWW negative feature bank", "category": "Downloaded training datasets", "description": "Checksummed broad negative features shared by openWakeWord and NanoWakeWord.", "paths": [DATA_DIR / "shared_feature_banks"], "rebuild_note": redownload},
@@ -1946,6 +1968,7 @@ def _start_training_thread(
     train_nanowakeword_cnn: bool = False,
     train_nanowakeword_gru: bool = False,
     generated_negative_phrases: list[str] | None = None,
+    train_boundary_only: bool = False,
 ) -> threading.Thread:
     global TRAINING_THREAD
     if TRAINING_SHUTDOWN_EVENT.is_set():
@@ -1965,6 +1988,7 @@ def _start_training_thread(
             train_nanowakeword_cnn,
             train_nanowakeword_gru,
             generated_negative_phrases or [],
+            train_boundary_only,
         ),
         daemon=True,
         name="wake-word-training",
@@ -2001,6 +2025,16 @@ def _run_openwakeword_only_background(
         STATE["training"]["log_lines"] = []
         STATE["training"]["safe_word"] = safe_word
         STATE["training"]["summary"] = None
+        STATE["training"]["progress"] = {
+            "stage": "openwakeword",
+            "label": "Preparing openWakeWord retry",
+            "current": 0,
+            "total": None,
+            "percent": None,
+            "elapsed": "",
+            "eta": "",
+            "unit": "items",
+        }
         STATE["training"]["log_path"] = str(log_path)
     log_path.write_text("", encoding="utf-8")
     _append_train_log(
@@ -2029,6 +2063,7 @@ def _run_openwakeword_only_background(
             selected_models=["open"],
             outcomes={"open": rc},
         )
+        _finish_training_progress(rc)
         with TRAINING_RUNTIME_LOCK:
             if TRAINING_THREAD is threading.current_thread():
                 TRAINING_THREAD = None
@@ -2084,7 +2119,17 @@ def _run_nanowakeword_validation_background(
     with STATE_LOCK:
         STATE["training"].update(
             {"running": True, "exit_code": None, "log_lines": [], "safe_word": safe_word,
-             "summary": None, "log_path": str(log_path)}
+             "summary": None, "log_path": str(log_path),
+             "progress": {
+                 "stage": "nanowakeword",
+                 "label": f"Preparing NanoWakeWord {architecture.upper()} validation",
+                 "current": 0,
+                 "total": None,
+                 "percent": None,
+                 "elapsed": "",
+                 "eta": "",
+                 "unit": "items",
+             }}
         )
     log_path.write_text("", encoding="utf-8")
     _append_train_log(
@@ -2112,6 +2157,7 @@ def _run_nanowakeword_validation_background(
             selected_models=[f"nano_{architecture}"],
             outcomes={f"nano_{architecture}": rc},
         )
+        _finish_training_progress(rc)
         with TRAINING_RUNTIME_LOCK:
             if TRAINING_THREAD is threading.current_thread():
                 TRAINING_THREAD = None
@@ -3319,19 +3365,74 @@ def _move_captured_audio(file_name: str, target_dir: Path, *, target_prefix: str
     }
 
 
-def _append_train_log(line: str):
+def _append_train_log(line: str) -> bool:
+    """Update live progress and append only durable, human-readable log lines."""
     line = (line or "").rstrip("\n")
+    progress, transient = parse_progress_line(line)
     with STATE_LOCK:
-        buf: List[str] = STATE["training"]["log_lines"]
-        buf.append(line)
-        if len(buf) > 250:
-            del buf[: len(buf) - 250]
+        if progress:
+            previous = STATE["training"].get("progress") or {}
+            if progress.get("stage") in {"model", "boundary"} and not progress.get("total"):
+                config_name = (
+                    "boundary_training_parameters.yaml"
+                    if progress.get("stage") == "boundary"
+                    else "training_parameters.yaml"
+                )
+                with contextlib.suppress(OSError, ValueError):
+                    config_text = (DATA_DIR / config_name).read_text(encoding="utf-8")
+                    match = re.search(
+                        r"(?m)^training_steps:[ \t]*\n(?P<values>(?:[ \t]*-[ \t]*\d+[ \t]*(?:\n|$))+)",
+                        config_text,
+                    )
+                    steps = re.findall(r"(?m)^[ \t]*-[ \t]*(\d+)", match.group("values")) if match else []
+                    if steps:
+                        progress["total"] = sum(int(step) for step in steps)
+                        progress["percent"] = 0.0
+                        progress["unit"] = "steps"
+            if progress.get("label") == "Processing" and previous.get("label"):
+                progress["label"] = previous["label"]
+                progress["stage"] = previous.get("stage", progress.get("stage"))
+                progress["unit"] = previous.get("unit", progress.get("unit"))
+                if previous.get("total") and not progress.get("total"):
+                    progress["total"] = previous["total"]
+                    progress["percent"] = round(
+                        float(progress.get("current") or 0) * 100.0 / float(previous["total"]),
+                        1,
+                    )
+            STATE["training"]["progress"] = progress
+        if not transient:
+            buf: List[str] = STATE["training"]["log_lines"]
+            buf.append(line)
+            if len(buf) > 250:
+                del buf[: len(buf) - 250]
+    return transient
+
+
+def _finish_training_progress(exit_code: int) -> None:
+    with STATE_LOCK:
+        previous = dict(STATE["training"].get("progress") or {})
+        previous.update(
+            {
+                "stage": "complete" if exit_code == 0 else "failed",
+                "label": "Training complete" if exit_code == 0 else "Training stopped with an error",
+                "current": None,
+                "total": None,
+                "percent": 100.0 if exit_code == 0 else None,
+                "eta": "",
+                "rate": None,
+                "rate_text": "",
+                "status": "complete" if exit_code == 0 else "failed",
+            }
+        )
+        STATE["training"]["progress"] = previous
 
 
 def _append_persistent_train_log(log_path: Path, line: str) -> None:
     """Record server-side stage messages in both the UI and saved log."""
     clean_line = (line or "").rstrip("\n")
-    _append_train_log(clean_line)
+    transient = _append_train_log(clean_line)
+    if transient:
+        return
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as log_file:
@@ -3371,6 +3472,20 @@ def _record_training_summary(
         }
     with STATE_LOCK:
         STATE["training"]["summary"] = summary
+    try:
+        record_run(
+            DATA_DIR,
+            trained_dir=TRAINED_WAKE_WORDS_DIR,
+            summary=summary,
+            selected_models=selected_models,
+            outcomes=outcomes,
+            run_kind="boundary" if selected_models == ["boundary"] else "full",
+        )
+    except Exception as error:
+        _append_persistent_train_log(
+            log_path,
+            f"⚠️ Could not save the immutable training-history snapshot: {error}",
+        )
     for line in training_summary_log_lines(summary):
         _append_persistent_train_log(log_path, line)
     return summary
@@ -3425,10 +3540,11 @@ def _run_openwakeword_training(
                 _terminate_training_process_tree(proc)
             assert proc.stdout is not None
             try:
-                for line in proc.stdout:
-                    log_file.write(line)
-                    log_file.flush()
-                    _append_train_log(line)
+                for line in iter_progress_lines(proc.stdout):
+                    transient = _append_train_log(line)
+                    if not transient:
+                        log_file.write(line)
+                        log_file.flush()
             finally:
                 with contextlib.suppress(Exception):
                     proc.stdout.close()
@@ -3512,10 +3628,11 @@ def _run_nanowakeword_training(
                 _terminate_training_process_tree(proc)
             assert proc.stdout is not None
             try:
-                for line in proc.stdout:
-                    log_file.write(line)
-                    log_file.flush()
-                    _append_train_log(line)
+                for line in iter_progress_lines(proc.stdout):
+                    transient = _append_train_log(line)
+                    if not transient:
+                        log_file.write(line)
+                        log_file.flush()
             finally:
                 with contextlib.suppress(Exception):
                     proc.stdout.close()
@@ -3552,6 +3669,7 @@ def _run_training_background(
     train_nanowakeword_cnn: bool = False,
     train_nanowakeword_gru: bool = False,
     generated_negative_phrases: list[str] | None = None,
+    train_boundary_only: bool = False,
 ):
     global TRAINING_PROCESS, TRAINING_THREAD
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
@@ -3567,6 +3685,16 @@ def _run_training_background(
         STATE["training"]["log_lines"] = []
         STATE["training"]["safe_word"] = safe_word
         STATE["training"]["summary"] = None
+        STATE["training"]["progress"] = {
+            "stage": "starting",
+            "label": "Preparing training pipeline",
+            "current": 0,
+            "total": None,
+            "percent": None,
+            "elapsed": "",
+            "eta": "",
+            "unit": "items",
+        }
         log_path = str(DATA_DIR / "recorder_training.log")
         STATE["training"]["log_path"] = log_path
 
@@ -3590,15 +3718,20 @@ def _run_training_background(
         if enabled
     ]
     selected_labels = [
+        *(["Wake boundary only"] if train_boundary_only else []),
         *(["MicroWakeWord"] if train_microwakeword else []),
         *(["openWakeWord"] if train_openwakeword else []),
         *(f"NanoWakeWord {item.upper()}" for item in selected_nano),
     ]
-    selected_models = [
-        *(["micro"] if train_microwakeword else []),
-        *(["open"] if train_openwakeword else []),
-        *(f"nano_{item}" for item in selected_nano),
-    ]
+    selected_models = (
+        ["boundary"]
+        if train_boundary_only
+        else [
+            *(["micro"] if train_microwakeword else []),
+            *(["open"] if train_openwakeword else []),
+            *(f"nano_{item}" for item in selected_nano),
+        ]
+    )
     model_outcomes: dict[str, int | None] = {model: None for model in selected_models}
     _append_train_log(f"→ Selected models: {', '.join(selected_labels)}")
     _append_train_log(f"→ Language: {language}")
@@ -3611,7 +3744,7 @@ def _run_training_background(
         )
 
     try:
-        if not train_microwakeword and not train_openwakeword and not selected_nano:
+        if not selected_models:
             raise RuntimeError("At least one wake-word model must be selected")
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         if language != "en" and tts_mode == "piper":
@@ -3625,7 +3758,7 @@ def _run_training_background(
                 )
 
         Path(log_path).write_text("", encoding="utf-8")
-        needs_shared_tts = train_microwakeword or train_openwakeword or bool(selected_nano)
+        needs_shared_tts = train_boundary_only or train_microwakeword or train_openwakeword or bool(selected_nano)
         if needs_shared_tts:
             _append_train_log(f"→ Running: {' '.join(cmd)}")
             env = os.environ.copy()
@@ -3641,7 +3774,9 @@ def _run_training_background(
             env["WAKEWORD_TRAINER_SUPPORT_DIR"] = str(SUPPORT_DIR)
             env["WAKEWORD_TRAINER_DATA_DIR"] = str(DATA_DIR)
             env["TRAINED_WAKE_WORDS_DIR"] = str(TRAINED_WAKE_WORDS_DIR)
-            if not train_microwakeword:
+            if train_boundary_only:
+                env["MWW_BOUNDARY_ONLY"] = "1"
+            elif not train_microwakeword:
                 env["MWW_GENERATE_ONLY"] = "1"
             with open(log_path, "a", encoding="utf-8") as lf:
                 proc = subprocess.Popen(
@@ -3663,15 +3798,18 @@ def _run_training_background(
                     _terminate_training_process_tree(proc)
                 assert proc.stdout is not None
                 try:
-                    for line in proc.stdout:
-                        lf.write(line)
-                        lf.flush()
-                        _append_train_log(line)
+                    for line in iter_progress_lines(proc.stdout):
+                        transient = _append_train_log(line)
+                        if not transient:
+                            lf.write(line)
+                            lf.flush()
                 finally:
                     with contextlib.suppress(Exception):
                         proc.stdout.close()
                 rc = proc.wait()
-            if train_microwakeword:
+            if train_boundary_only:
+                model_outcomes["boundary"] = rc
+            elif train_microwakeword:
                 model_outcomes["micro"] = rc
             elif rc != 0 and selected_models:
                 model_outcomes[selected_models[0]] = rc
@@ -3754,6 +3892,7 @@ def _run_training_background(
             selected_models=selected_models,
             outcomes=model_outcomes,
         )
+        _finish_training_progress(rc)
         with TRAINING_RUNTIME_LOCK:
             if TRAINING_PROCESS is proc:
                 TRAINING_PROCESS = None
@@ -3937,6 +4076,24 @@ def start_session(payload: Dict[str, Any]):
     speakers_total = max(1, min(10, speakers_total))
     takes_per_speaker = max(1, min(50, takes_per_speaker))
 
+    try:
+        with DATA_MANAGEMENT_LOCK:
+            library_result = activate_word(
+                DATA_DIR,
+                safe_word=safe,
+                phrase=raw,
+                language=language,
+                english_accent=english_accent,
+                tts_mode=tts_mode,
+                workspace_paths=WORD_WORKSPACE_PATHS,
+            )
+            TRIM_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as error:
+        return JSONResponse(
+            {"ok": False, "error": f"Could not activate saved wake-word data: {error}"},
+            status_code=409,
+        )
+
     with STATE_LOCK:
         STATE["raw_phrase"] = raw
         STATE["safe_word"] = safe
@@ -3962,6 +4119,7 @@ def start_session(payload: Dict[str, Any]):
         "takes": takes,
         "available_languages": available_languages,
         "available_english_accents": english_accent_options(),
+        "reused_saved_data": bool(library_result.get("reused")),
     }
 
 
@@ -4519,6 +4677,26 @@ def trained_wake_words_catalog(request: Request):
     }
 
 
+@app.get("/api/wake_word_library")
+def wake_word_library_catalog():
+    return {
+        "ok": True,
+        "words": list_words(
+            DATA_DIR,
+            trained_dir=TRAINED_WAKE_WORDS_DIR,
+            workspace_paths=WORD_WORKSPACE_PATHS,
+        ),
+    }
+
+
+@app.get("/api/wake_word_library/{safe_word}/history")
+def wake_word_library_history(safe_word: str):
+    normalized = safe_name(safe_word)
+    if normalized != safe_word:
+        return JSONResponse({"ok": False, "error": "Invalid wake-word id."}, status_code=400)
+    return {"ok": True, "safe_word": normalized, "runs": word_history(DATA_DIR, normalized)}
+
+
 @app.get("/api/trained_wake_words/{filename}")
 def trained_wake_word_artifact(filename: str):
     safe_filename = Path(filename or "").name
@@ -4564,6 +4742,7 @@ def train_now(payload: Dict[str, Any] = None):
         payload.get("generated_negative_phrases")
     )
     allow_no_personal = bool(payload.get("allow_no_personal", False))
+    train_boundary_only = _config_bool(payload.get("train_boundary_only"), False)
     train_microwakeword = _config_bool(payload.get("train_microwakeword"), True)
     train_openwakeword = normalize_train_openwakeword(
         payload.get("train_openwakeword"), False
@@ -4574,7 +4753,12 @@ def train_now(payload: Dict[str, Any] = None):
     train_nanowakeword_gru = normalize_train_nanowakeword(
         payload.get("train_nanowakeword_gru"), False
     )
-    if not any((train_microwakeword, train_openwakeword, train_nanowakeword_cnn, train_nanowakeword_gru)):
+    if train_boundary_only:
+        train_microwakeword = False
+        train_openwakeword = False
+        train_nanowakeword_cnn = False
+        train_nanowakeword_gru = False
+    if not any((train_boundary_only, train_microwakeword, train_openwakeword, train_nanowakeword_cnn, train_nanowakeword_gru)):
         return JSONResponse(
             {"ok": False, "error": "Select at least one wake-word model to train."},
             status_code=400,
@@ -4654,6 +4838,7 @@ def train_now(payload: Dict[str, Any] = None):
             train_nanowakeword_cnn=train_nanowakeword_cnn,
             train_nanowakeword_gru=train_nanowakeword_gru,
             generated_negative_phrases=generated_negative_phrases,
+            train_boundary_only=train_boundary_only,
         )
     except Exception as exc:
         with STATE_LOCK:
@@ -4673,6 +4858,7 @@ def train_now(payload: Dict[str, Any] = None):
         "train_openwakeword": train_openwakeword,
         "train_nanowakeword_cnn": train_nanowakeword_cnn,
         "train_nanowakeword_gru": train_nanowakeword_gru,
+        "train_boundary_only": train_boundary_only,
         "generated_negative_phrases": generated_negative_phrases,
     }
 

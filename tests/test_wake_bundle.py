@@ -10,6 +10,7 @@ from wake_bundle import (
     publish_micro_wake_word,
     publish_nano_wake_word,
     publish_open_wake_word,
+    publish_wake_boundary,
 )
 
 
@@ -126,7 +127,7 @@ class WakeBundleTests(unittest.TestCase):
                 )
 
             bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-            self.assertEqual(bundle["schema_version"], 3)
+            self.assertEqual(bundle["schema_version"], 4)
             self.assertEqual(bundle["micro_wake_word"]["model"], mww.name)
             self.assertNotIn("manifest", bundle["micro_wake_word"])
             self.assertNotIn("calibration", bundle["open_wake_word"])
@@ -137,6 +138,25 @@ class WakeBundleTests(unittest.TestCase):
             catalog = bundle_catalog_fields(root, "hey_tater", "http://trainer.test")
             self.assertEqual(catalog["available_engines"], ["micro_wake_word", "open_wake_word", "nano_wake_word"])
             self.assertEqual(set(catalog["nanowakeword_architectures"]), {"cnn", "gru"})
+
+    def test_boundary_model_is_hash_verified_and_catalogued(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / "hey_tater.boundary.tflite"
+            model.write_bytes(b"TFL3 boundary")
+            path = publish_wake_boundary(
+                trained_dir=root,
+                safe_word="hey_tater",
+                phrase="hey tater",
+                model_path=model,
+                metadata={"threshold": 0.82, "tensor_arena_size": 65536},
+            )
+            bundle = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(bundle["schema_version"], 4)
+            self.assertEqual(bundle["wake_boundary"]["model"], model.name)
+            self.assertEqual(len(bundle["wake_boundary"]["model_sha256"]), 64)
+            catalog = bundle_catalog_fields(root, "hey_tater")
+            self.assertTrue(catalog["wake_boundary_available"])
 
     def test_nano_default_uses_streaming_quality_instead_of_fixed_cnn(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,3 +1,9 @@
-- Fixed excessive memory growth while moving very large trainer data folders.
-- File transfers now reuse a fixed 8 MB buffer, keeping memory essentially constant even for hundreds of gigabytes of data.
-- The existing permission handling and safe rollback behavior remain intact throughout the move.
+- Added a dedicated per-word wake-boundary model that learns the acoustic end of the wake phrase, calibrates its threshold, and publishes it in the new schema-v4 Tater wake bundle.
+- Added **Retrain boundary only** so the boundary model can be regenerated from cached data without retraining or replacing the existing MWW, OWW, or NWW detector models.
+- Added a saved wake-word library. Each phrase now keeps its personal samples, reviewed negatives, generated speech, feature caches, boundary data, and retained training workspace when switching words.
+- Added immutable model-run history with engine selections, quality ratings, recall, false-trigger measurements, thresholds, and direct links to every published model, including the boundary artifact.
+- Replaced raw counter redraws with a themed live progress card showing the current stage, completed work, speed, elapsed time, and ETA across speech generation, feature building, detector training, boundary training, and packaging.
+- Added conservative MicroWakeWord early stopping: training can finish once validation stops improving after the minimum training window while retaining the best checkpoint and the existing 40,000-step quality ceiling.
+- Boundary-only runs are now accepted without selecting another detector, preserve the existing bundle contents, and produce their own quality summary instead of appearing as a full MicroWakeWord run.
+- Fixed macOS virtual environments and OmniVoice launches when the selected trainer data path contains spaces or relocates a virtual environment; missing TTS engines continue cleanly with the remaining providers.
+- Improved training cancellation and app shutdown so the active process group is stopped cleanly without leaving background trainer work behind.

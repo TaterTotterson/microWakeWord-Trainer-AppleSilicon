@@ -80,6 +80,16 @@ class VueTrainerUiTests(unittest.TestCase):
         self.assertIn('@scroll.passive="onConsoleScroll"', app)
         self.assertIn("Jump to latest", app)
 
+    def test_training_console_has_one_themed_progress_card(self) -> None:
+        app = (REPO_ROOT / "frontend" / "src" / "TrainerApp.vue").read_text(encoding="utf-8")
+        styles = (REPO_ROOT / "frontend" / "src" / "trainer.css").read_text(encoding="utf-8")
+        types = (REPO_ROOT / "frontend" / "src" / "types.ts").read_text(encoding="utf-8")
+
+        self.assertIn('class="console-progress"', app)
+        self.assertIn("trainingProgressPercent", app)
+        self.assertIn("console-progress-scan", styles)
+        self.assertIn("progress?: TrainingProgress | null", types)
+
     def test_data_view_exposes_native_macos_folder_picker(self) -> None:
         app = (REPO_ROOT / "frontend" / "src" / "TrainerApp.vue").read_text(encoding="utf-8")
         store = (REPO_ROOT / "frontend" / "src" / "trainerStore.ts").read_text(encoding="utf-8")
@@ -132,6 +142,16 @@ class VueTrainerUiTests(unittest.TestCase):
         self.assertIn("wordEsphomeJsonUrl", app)
         self.assertIn("Copy ESPHome URL", app)
         self.assertIn("esphome_json_url?: string", types)
+
+    def test_wake_words_tab_exposes_boundary_model_urls(self) -> None:
+        app = (REPO_ROOT / "frontend" / "src" / "TrainerApp.vue").read_text(encoding="utf-8")
+        types = (REPO_ROOT / "frontend" / "src" / "types.ts").read_text(encoding="utf-8")
+
+        self.assertIn("wordWakeBoundaryUrl", app)
+        self.assertIn("Wake boundary model ·", app)
+        self.assertIn("wake boundary · threshold", app)
+        self.assertIn("wake_boundary_model_url?: string", types)
+        self.assertIn("wake_boundary_threshold?: number", types)
 
     def test_runtime_packaging_uses_bundle_without_node(self) -> None:
         dockerfiles = [REPO_ROOT / "dockerfile", REPO_ROOT / "dockerfile.blackwell"]

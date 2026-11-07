@@ -13,6 +13,12 @@ config = {
     {"features_dir": "negative_datasets/dinner_party_eval","sampling_weight": 0.0,"penalty_weight":1.0,"truth": False,"truncation_strategy":"split","type":"mmap"},
   ],
   "training_steps": [40000],
+  "early_stopping": {
+    "enabled": True,
+    "min_steps": 20000,
+    "patience_steps": 6000,
+    "min_delta": 0.001,
+  },
   "positive_class_weight": [1],
   "negative_class_weight": [20],
   "learning_rates": [0.001],

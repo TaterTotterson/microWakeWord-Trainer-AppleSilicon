@@ -31,6 +31,7 @@ ENGLISH_ACCENT="${MWW_ENGLISH_ACCENT:-mixed}"
 TTS_MODE="${MWW_TTS_MODE:-hybrid}"
 TTS_VOICE_COUNT="${MWW_TTS_VOICE_COUNT:-128}"
 ARTIFACT_SLUG="${MWW_ARTIFACT_SLUG:-}"
+BOUNDARY_ONLY="${MWW_BOUNDARY_ONLY:-0}"
 
 # Collect optional flags
 PIPER_MODELS=()
@@ -41,9 +42,15 @@ while [[ $# -gt 0 ]]; do
     --english-accent) ENGLISH_ACCENT="${2:-}"; shift 2 ;;
     --tts-mode) TTS_MODE="${2:-}"; shift 2 ;;
     --tts-voice-count) TTS_VOICE_COUNT="${2:-}"; shift 2 ;;
+    --boundary-only) BOUNDARY_ONLY=1; shift ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
+
+case "${BOUNDARY_ONLY,,}" in
+  1|true|yes|on) BOUNDARY_ONLY=1 ;;
+  *) BOUNDARY_ONLY=0 ;;
+esac
 
 LANGUAGE="$(echo "${LANGUAGE}" | tr '[:upper:]' '[:lower:]')"
 if [[ -z "$LANGUAGE" ]]; then
@@ -76,6 +83,24 @@ if [[ ! "$TTS_VOICE_COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 export MWW_TTS_MODE="$TTS_MODE" MWW_TTS_VOICE_COUNT="$TTS_VOICE_COUNT"
 echo "🗣️  TTS mode: $TTS_MODE (direct final-sample generation; no reusable voice bank)"
+if [[ "$BOUNDARY_ONLY" == "1" ]]; then
+  echo "🧭 Boundary-only mode: detector models will be preserved."
+  boundary_artifact_source="${ARTIFACT_SLUG:-${TARGET_WORD}}"
+  BOUNDARY_SAFE_WORD="$(printf '%s' "$boundary_artifact_source" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//')"
+  if [[ -z "$BOUNDARY_SAFE_WORD" ]]; then
+    BOUNDARY_SAFE_WORD="wakeword_$(printf '%s' "$TARGET_WORD" | shasum -a 256 | awk '{print substr($1,1,8)}')"
+  fi
+  if [[ ! -f "${TRAINED_WAKE_WORDS_DIR:-trained_wake_words}/${BOUNDARY_SAFE_WORD}.wake-bundle.json" ]]; then
+    echo "❌ Boundary-only training needs an existing detector bundle for '$TARGET_WORD'." >&2
+    echo "   Run one full detector training first." >&2
+    exit 1
+  fi
+  if [[ ! -f "trained_models/wakeword/training_config.yaml" ]]; then
+    echo "❌ Boundary-only training needs the retained detector training config for this word." >&2
+    echo "   Run one full MicroWakeWord training first." >&2
+    exit 1
+  fi
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "❌ This script is intended for macOS (Apple Silicon)."; exit 1
@@ -271,12 +296,16 @@ if [[ ! -d ".venv" ]]; then
   arch -arm64 "$PYTHON_BIN" -m venv .venv
 fi
 
-# always activate (both create + reuse)
-# shellcheck disable=SC1091
-source .venv/bin/activate
+# Use the environment directly instead of sourcing bin/activate. Python's
+# generated activation script can contain an unquoted absolute path when the
+# selected trainer data folder has spaces (for example "WakeWord Trainer Data").
+VIRTUAL_ENV="$(pwd)/.venv"
+export VIRTUAL_ENV
+export PATH="$VIRTUAL_ENV/bin:$PATH"
+unset PYTHONHOME || true
 
-# canonical python for the rest of the script (never rely on PATH again)
-PY="$(pwd)/.venv/bin/python"
+# canonical python for the rest of the script (never rely on PATH alone)
+PY="$VIRTUAL_ENV/bin/python"
 if [[ ! -x "$PY" ]]; then
   echo "❌ venv python not found at $PY"
   exit 1
@@ -602,16 +631,26 @@ compute_generated_negative_cache_key() {
   } | shasum -a 256 | awk '{print $1}'
 }
 
+compute_boundary_negative_cache_key() {
+  if [[ ! -f "boundary_negative_samples/.generation_manifest.json" ]]; then
+    echo "missing"
+    return
+  fi
+  shasum -a 256 "boundary_negative_samples/.generation_manifest.json" | awk '{print $1}'
+}
+
 compute_feature_cache_key() {
   local sample_key="$1"
   local personal_key="$2"
   local reviewed_negative_key="$3"
   local generated_negative_key="$4"
+  local boundary_negative_key="$5"
   {
     printf 'sample_key=%s\n' "$sample_key"
     printf 'personal_key=%s\n' "$personal_key"
     printf 'reviewed_negative_key=%s\n' "$reviewed_negative_key"
     printf 'generated_negative_key=%s\n' "$generated_negative_key"
+    printf 'boundary_negative_key=%s\n' "$boundary_negative_key"
     stat -f 'feature_script=%N:%m:%z' "$SOURCE_DIR/scripts_macos/make_features.py"
     for dataset_dir in mit_rirs audioset_16k fma_16k chime_16k; do
       printf '%s=%s\n' "$dataset_dir" "$(count_matching_files "$dataset_dir" '*.wav')"
@@ -630,7 +669,9 @@ SAMPLE_CACHE_KEY="$(compute_sample_cache_key)"
 # ── (A) clean previous run artifacts that must always be rebuilt ─────────────
 echo "🧹 Cleaning previous training outputs…"
 rm -f training_parameters.yaml
-rm -rf trained_models
+if [[ "$BOUNDARY_ONLY" != "1" ]]; then
+  rm -rf trained_models
+fi
 echo "✅ Training outputs cleared."
 
 mkdir -p generated_samples
@@ -752,12 +793,20 @@ else
   echo "ℹ️ No personal samples uploaded; skipping silence trimming."
 fi
 
+echo "🧭 Building wake-end hard negatives for the boundary model…"
+"$PY" "$SOURCE_DIR/scripts_macos/prepare_wake_boundary_data.py" \
+  --positive-dir "generated_samples" \
+  --positive-dir "personal_samples" \
+  --output-dir "boundary_negative_samples" \
+  --variants 2
+
 # ── (F) build augmenter + spectrogram feature mmaps ───────────────────────────
 PERSONAL_CACHE_KEY="$(compute_personal_cache_key)"
 REVIEWED_NEGATIVE_CACHE_KEY="$(compute_reviewed_negative_cache_key)"
 GENERATED_NEGATIVE_CACHE_KEY="$(compute_generated_negative_cache_key)"
+BOUNDARY_NEGATIVE_CACHE_KEY="$(compute_boundary_negative_cache_key)"
 SAMPLE_CACHE_STAMP="$(read_cache_key "$SAMPLE_CACHE_STAMP_FILE")"
-FEATURE_CACHE_KEY="$(compute_feature_cache_key "${SAMPLE_CACHE_KEY}:${SAMPLE_CACHE_STAMP}" "$PERSONAL_CACHE_KEY" "$REVIEWED_NEGATIVE_CACHE_KEY" "$GENERATED_NEGATIVE_CACHE_KEY")"
+FEATURE_CACHE_KEY="$(compute_feature_cache_key "${SAMPLE_CACHE_KEY}:${SAMPLE_CACHE_STAMP}" "$PERSONAL_CACHE_KEY" "$REVIEWED_NEGATIVE_CACHE_KEY" "$GENERATED_NEGATIVE_CACHE_KEY" "$BOUNDARY_NEGATIVE_CACHE_KEY")"
 feature_cache_hit=false
 cached_feature_key="$(read_cache_key "$FEATURE_CACHE_KEY_FILE")"
 cached_personal_feature_key="$(read_cache_key "$PERSONAL_FEATURE_CACHE_KEY_FILE")"
@@ -798,7 +847,7 @@ if features_dir_ready "generated_augmented_features" && [[ -n "$cached_feature_k
     generated_negative_feature_cache_ok=true
   fi
 
-  if [[ "$personal_feature_cache_ok" == "true" && "$reviewed_negative_feature_cache_ok" == "true" && "$generated_negative_feature_cache_ok" == "true" ]]; then
+  if [[ "$personal_feature_cache_ok" == "true" && "$reviewed_negative_feature_cache_ok" == "true" && "$generated_negative_feature_cache_ok" == "true" ]] && features_dir_ready "boundary_negative_features"; then
     feature_cache_hit=true
   fi
 fi
@@ -806,9 +855,9 @@ fi
 if [[ "$feature_cache_hit" == "true" ]]; then
   echo "✅ Reusing augmented feature caches for the current wake word, personal samples, and hard negatives."
 else
-  if [[ -d "generated_augmented_features" || -d "personal_augmented_features" || -d "reviewed_negative_features" || -d "generated_negative_features" ]]; then
+  if [[ -d "generated_augmented_features" || -d "personal_augmented_features" || -d "reviewed_negative_features" || -d "generated_negative_features" || -d "boundary_negative_features" ]]; then
     echo "♻️ Feature cache changed; rebuilding augmented features."
-    rm -rf generated_augmented_features personal_augmented_features reviewed_negative_features generated_negative_features
+    rm -rf generated_augmented_features personal_augmented_features reviewed_negative_features generated_negative_features boundary_negative_features
   fi
   echo "🧪 Building augmented feature sets…"
   "$PY" "$SOURCE_DIR/scripts_macos/make_features.py"
@@ -833,10 +882,42 @@ echo "📝 Writing training config…"
 "$PY" "$SOURCE_DIR/scripts_macos/write_training_yaml.py"
 
 # ── (I) train + export (Metal TF) ────────────────────────────────────────────
-echo "🏋️ Starting model training and TFLite export (this is the longest stage)…"
-echo "🧠 Model quality: high_accuracy_plus"
+if [[ "$BOUNDARY_ONLY" != "1" ]]; then
+  echo "🏋️ Starting model training and TFLite export (this is the longest stage)…"
+  echo "🧠 Model quality: high_accuracy_plus"
+  "$PY" -m microwakeword.model_train_eval \
+    --training_config=training_parameters.yaml \
+    --train 1 \
+    --restore_checkpoint 1 \
+    --test_tf_nonstreaming 0 \
+    --test_tflite_nonstreaming 0 \
+    --test_tflite_nonstreaming_quantized 0 \
+    --test_tflite_streaming 0 \
+    --test_tflite_streaming_quantized 1 \
+    --use_weights "best_weights" \
+    mixednet \
+    --pointwise_filters "128,128,128,128" \
+    --repeat_in_block "1,1,1,1" \
+    --mixconv_kernel_sizes "[5], [7,11], [9,15], [23]" \
+    --residual_connection "0,0,0,0" \
+    --first_conv_filters 64 \
+    --first_conv_kernel_size 5 \
+    --stride 2
+fi
+
+BOUNDARY_CONFIG="boundary_training_parameters.yaml"
+BOUNDARY_MODEL="trained_models/wake_boundary/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite"
+BOUNDARY_CALIBRATION_JSON="trained_models/wake_boundary/tflite_stream_state_internal_quant/boundary_calibration.json"
+echo "🧭 Training dedicated wake-end boundary model…"
+rm -rf trained_models/wake_boundary
+"$PY" "$SOURCE_DIR/scripts_macos/write_boundary_training_yaml.py" \
+  --source "training_parameters.yaml" \
+  --output "$BOUNDARY_CONFIG" \
+  --train-dir "trained_models/wake_boundary" \
+  --features-dir "boundary_negative_features" \
+  --steps "${MWW_BOUNDARY_TRAINING_STEPS:-20000}"
 "$PY" -m microwakeword.model_train_eval \
-  --training_config=training_parameters.yaml \
+  --training_config="$BOUNDARY_CONFIG" \
   --train 1 \
   --restore_checkpoint 1 \
   --test_tf_nonstreaming 0 \
@@ -853,33 +934,70 @@ echo "🧠 Model quality: high_accuracy_plus"
   --first_conv_filters 64 \
   --first_conv_kernel_size 5 \
   --stride 2
+if [[ ! -f "$BOUNDARY_MODEL" ]]; then
+  echo "❌ Dedicated wake boundary model was not exported: $BOUNDARY_MODEL"
+  exit 1
+fi
+if (( $(wc -c < "$BOUNDARY_MODEL") > 204800 )); then
+  echo "❌ Dedicated wake boundary model exceeds the 200 KiB Echo contract: $BOUNDARY_MODEL" >&2
+  exit 1
+fi
+
+echo "🎯 Calibrating the per-word wake boundary threshold…"
+if "$PY" "$SOURCE_DIR/scripts_macos/calibrate_detector.py" \
+  --training-config "trained_models/wakeword/training_config.yaml" \
+  --model "$BOUNDARY_MODEL" \
+  --output "$BOUNDARY_CALIBRATION_JSON" \
+  --target-faph "${MWW_BOUNDARY_CALIBRATION_TARGET_FAPH:-1.0}" \
+  --recall-margin "${MWW_BOUNDARY_CALIBRATION_RECALL_MARGIN:-0.01}" \
+  --window-sizes "1" \
+  --cutoff-min "${MWW_BOUNDARY_CALIBRATION_CUTOFF_MIN:-0.50}" \
+  --cutoff-max "${MWW_BOUNDARY_CALIBRATION_CUTOFF_MAX:-0.99}"; then
+  echo "✅ Wake boundary calibration complete."
+else
+  echo "⚠️ Wake boundary calibration failed; packaging with threshold 0.80."
+  rm -f "$BOUNDARY_CALIBRATION_JSON"
+fi
 
 # ── (J) calibrate detector metadata ────────────────────────────────────────────
 CALIBRATION_JSON="trained_models/wakeword/tflite_stream_state_internal_quant/detection_calibration.json"
-echo "🎯 Calibrating detector settings for on-device use…"
-if "$PY" "$SOURCE_DIR/scripts_macos/calibrate_detector.py" \
-  --training-config "trained_models/wakeword/training_config.yaml" \
-  --model "trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite" \
-  --output "$CALIBRATION_JSON" \
-  --target-faph "${MWW_CALIBRATION_TARGET_FAPH:-0.25}" \
-  --recall-margin "${MWW_CALIBRATION_RECALL_MARGIN:-0.005}" \
-  --window-sizes "${MWW_CALIBRATION_WINDOW_SIZES:-5,6,7}" \
-  --cutoff-min "${MWW_CALIBRATION_CUTOFF_MIN:-0.95}" \
-  --cutoff-max "${MWW_CALIBRATION_CUTOFF_MAX:-1.00}"; then
-  echo "✅ Detector calibration complete."
-else
-  echo "⚠️ Detector calibration failed; packaging with default detector settings."
-  rm -f "$CALIBRATION_JSON"
+if [[ "$BOUNDARY_ONLY" != "1" ]]; then
+  echo "🎯 Calibrating detector settings for on-device use…"
+  if "$PY" "$SOURCE_DIR/scripts_macos/calibrate_detector.py" \
+    --training-config "trained_models/wakeword/training_config.yaml" \
+    --model "trained_models/wakeword/tflite_stream_state_internal_quant/stream_state_internal_quant.tflite" \
+    --output "$CALIBRATION_JSON" \
+    --target-faph "${MWW_CALIBRATION_TARGET_FAPH:-0.25}" \
+    --recall-margin "${MWW_CALIBRATION_RECALL_MARGIN:-0.005}" \
+    --window-sizes "${MWW_CALIBRATION_WINDOW_SIZES:-5,6,7}" \
+    --cutoff-min "${MWW_CALIBRATION_CUTOFF_MIN:-0.95}" \
+    --cutoff-max "${MWW_CALIBRATION_CUTOFF_MAX:-1.00}"; then
+    echo "✅ Detector calibration complete."
+  else
+    echo "⚠️ Detector calibration failed; packaging with default detector settings."
+    rm -f "$CALIBRATION_JSON"
+  fi
 fi
 
 # ── (J) package artifacts (name by wake word) ─────────────────────────────────
 echo "📦 Packaging final model artifacts…"
-"$PY" "$SOURCE_DIR/scripts_macos/package_model.py" \
-  "$TARGET_WORD" \
-  "$LANGUAGE" \
-  "$CALIBRATION_JSON" \
-  --output-dir "${TRAINED_WAKE_WORDS_DIR:-trained_wake_words}" \
-  --artifact-slug "$ARTIFACT_SLUG" \
-  --name-by-wake-word
+if [[ "$BOUNDARY_ONLY" == "1" ]]; then
+  "$PY" "$SOURCE_DIR/scripts_macos/package_boundary_model.py" \
+    "$TARGET_WORD" \
+    --safe-word "$BOUNDARY_SAFE_WORD" \
+    --output-dir "${TRAINED_WAKE_WORDS_DIR:-trained_wake_words}" \
+    --model "$BOUNDARY_MODEL" \
+    --calibration "$BOUNDARY_CALIBRATION_JSON"
+else
+  "$PY" "$SOURCE_DIR/scripts_macos/package_model.py" \
+    "$TARGET_WORD" \
+    "$LANGUAGE" \
+    "$CALIBRATION_JSON" \
+    --output-dir "${TRAINED_WAKE_WORDS_DIR:-trained_wake_words}" \
+    --artifact-slug "$ARTIFACT_SLUG" \
+    --boundary-model "$BOUNDARY_MODEL" \
+    --boundary-calibration "$BOUNDARY_CALIBRATION_JSON" \
+    --name-by-wake-word
+fi
 
 echo "🎉 Done."

@@ -16,12 +16,20 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from wake_bundle import publish_micro_wake_word  # noqa: E402
+from wake_bundle import publish_micro_wake_word, publish_wake_boundary  # noqa: E402
 
 
 DEFAULT_MODEL_PATH = Path(
     "trained_models/wakeword/tflite_stream_state_internal_quant/"
     "stream_state_internal_quant.tflite"
+)
+DEFAULT_BOUNDARY_MODEL_PATH = Path(
+    "trained_models/wake_boundary/tflite_stream_state_internal_quant/"
+    "stream_state_internal_quant.tflite"
+)
+DEFAULT_BOUNDARY_CALIBRATION_PATH = Path(
+    "trained_models/wake_boundary/tflite_stream_state_internal_quant/"
+    "boundary_calibration.json"
 )
 DEFAULT_CALIBRATION_PATH = Path(
     "trained_models/wakeword/tflite_stream_state_internal_quant/"
@@ -83,6 +91,20 @@ def read_calibration(path: Path) -> tuple[dict[str, Any], float, int]:
     )
 
 
+def read_boundary_threshold(path: Path) -> tuple[float, dict[str, Any]]:
+    calibration: dict[str, Any] = {}
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            calibration = payload if isinstance(payload, dict) else {}
+            threshold = float(calibration.get("probability_cutoff", 0.80))
+            if 0.0 < threshold <= 1.0:
+                return round(threshold, 3), calibration
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return 0.80, calibration
+
+
 def package_model(
     wake_word: str,
     language: str,
@@ -92,9 +114,16 @@ def package_model(
     name_by_wake_word: bool = False,
     artifact_slug: str = "",
     source_model: Path = DEFAULT_MODEL_PATH,
+    source_boundary_model: Path = DEFAULT_BOUNDARY_MODEL_PATH,
+    boundary_calibration_path: Path = DEFAULT_BOUNDARY_CALIBRATION_PATH,
 ) -> tuple[Path, Path, Path]:
     if not source_model.exists():
         raise SystemExit(f"❌ Model not found at {source_model}")
+    if not source_boundary_model.exists():
+        raise SystemExit(
+            f"❌ Wake boundary model not found at {source_boundary_model}; "
+            "run endpoint training before packaging"
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     basename = (
@@ -103,12 +132,17 @@ def package_model(
         else "stream_state_internal_quant"
     )
     model_path = output_dir / f"{basename}.tflite"
+    boundary_model_path = output_dir / f"{basename}.boundary.tflite"
     bundle_path = output_dir / f"{basename}.wake-bundle.json"
     esphome_json_path = output_dir / f"{basename}.esphome.json"
     shutil.copy(source_model, model_path)
+    shutil.copy(source_boundary_model, boundary_model_path)
 
     calibration, probability_cutoff, sliding_window_size = read_calibration(
         calibration_path
+    )
+    boundary_threshold, boundary_calibration = read_boundary_threshold(
+        boundary_calibration_path
     )
     selected_metrics = (
         calibration.get("selected_metrics")
@@ -184,6 +218,18 @@ def package_model(
         },
     }
 
+    publish_wake_boundary(
+        trained_dir=output_dir,
+        safe_word=basename,
+        phrase=wake_word,
+        model_path=boundary_model_path,
+        metadata={
+            "threshold": boundary_threshold,
+            "tensor_arena_size": 64 * 1024,
+            "training_strategy": "endpoint_hard_negative_v1",
+            "quality_summary": boundary_calibration.get("selected_metrics", {}),
+        },
+    )
     publish_micro_wake_word(
         trained_dir=output_dir,
         safe_word=basename,
@@ -217,6 +263,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default=".")
     parser.add_argument("--artifact-slug", default="")
+    parser.add_argument("--boundary-model", default=str(DEFAULT_BOUNDARY_MODEL_PATH))
+    parser.add_argument(
+        "--boundary-calibration",
+        default=str(DEFAULT_BOUNDARY_CALIBRATION_PATH),
+    )
     parser.add_argument("--name-by-wake-word", action="store_true")
     return parser.parse_args()
 
@@ -233,6 +284,8 @@ def main() -> None:
         Path(args.output_dir),
         name_by_wake_word=bool(args.name_by_wake_word),
         artifact_slug=str(args.artifact_slug),
+        source_boundary_model=Path(args.boundary_model),
+        boundary_calibration_path=Path(args.boundary_calibration),
     )
 
 

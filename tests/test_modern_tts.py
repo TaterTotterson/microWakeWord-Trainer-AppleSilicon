@@ -148,6 +148,7 @@ class ModernTtsTests(unittest.TestCase):
             instance = generator_module.Generator(args)
             destination = data_dir / "bank"
             destination.mkdir()
+            omnivoice_python = data_dir / "tts-envs" / "omnivoice" / "bin" / "python"
 
             def create_model_outputs(command, *, only_first: bool = False) -> None:
                 input_flag = "--test_list" if "--test_list" in command else "--input-jsonl"
@@ -164,7 +165,7 @@ class ModernTtsTests(unittest.TestCase):
                     write_tone(output_dir / f"{item['id']}.wav")
 
             with (
-                patch.object(instance, "ensure_environment"),
+                patch.object(instance, "ensure_environment", return_value=omnivoice_python),
                 patch.object(
                     generator_module,
                     "run_with_batch_retry",
@@ -188,6 +189,10 @@ class ModernTtsTests(unittest.TestCase):
         self.assertNotIn("instruct", entries[0])
         for call in run_batch.call_args_list:
             command = call.args[0]
+            self.assertEqual(
+                command[:3],
+                [str(omnivoice_python), "-m", "omnivoice.cli.infer_batch"],
+            )
             if "--position_temperature" in command:
                 self.assertEqual(command[command.index("--position_temperature") + 1], "5.0")
                 self.assertEqual(command[command.index("--class_temperature") + 1], "0.0")
@@ -939,7 +944,12 @@ class ModernTtsTests(unittest.TestCase):
             for index, line in enumerate(packaging_lines)
             if 'scripts_macos/package_model.py' in line
         )
-        packaging_command = packaging_lines[packaging_start : packaging_start + 7]
+        packaging_end = next(
+            index
+            for index in range(packaging_start, len(packaging_lines))
+            if "--name-by-wake-word" in packaging_lines[index]
+        )
+        packaging_command = packaging_lines[packaging_start : packaging_end + 1]
         for line in packaging_command[:-1]:
             self.assertTrue(line.endswith("\\"), line)
             self.assertFalse(line.endswith("\\\\"), line)

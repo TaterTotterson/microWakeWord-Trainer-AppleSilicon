@@ -1,6 +1,8 @@
+import io
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -33,6 +35,19 @@ class _FakeTrainingProcess:
 
     def kill(self):
         self.kill_calls += 1
+
+
+class _CompletedBoundaryProcess:
+    def __init__(self):
+        self.pid = 9876
+        self.returncode = 0
+        self.stdout = io.StringIO("boundary worker started\n")
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
 
 
 class ShutdownTests(unittest.TestCase):
@@ -68,6 +83,48 @@ class ShutdownTests(unittest.TestCase):
         trainer.TRAINING_SHUTDOWN_EVENT.set()
         with self.assertRaisesRegex(RuntimeError, "shutting down"):
             trainer._start_training_thread("hey_tater", "en", False, None)
+
+    def test_boundary_only_is_a_valid_training_selection(self):
+        original_process = trainer.TRAINING_PROCESS
+        original_thread = trainer.TRAINING_THREAD
+        original_raw_phrase = trainer.STATE.get("raw_phrase")
+        original_training = dict(trainer.STATE["training"])
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                data_dir = Path(directory)
+                process = _CompletedBoundaryProcess()
+                trainer.TRAINING_PROCESS = None
+                trainer.TRAINING_THREAD = threading.current_thread()
+                with trainer.STATE_LOCK:
+                    trainer.STATE["raw_phrase"] = "hey tater"
+
+                with (
+                    patch.object(trainer, "DATA_DIR", data_dir),
+                    patch.object(trainer, "TRAINED_WAKE_WORDS_DIR", data_dir / "trained_wake_words"),
+                    patch.object(trainer.subprocess, "Popen", return_value=process) as popen,
+                    patch.object(trainer, "_record_training_summary") as record_summary,
+                ):
+                    trainer._run_training_background(
+                        "hey_tater",
+                        "en",
+                        train_microwakeword=False,
+                        train_boundary_only=True,
+                    )
+
+                popen.assert_called_once()
+                environment = popen.call_args.kwargs["env"]
+                self.assertEqual(environment["MWW_BOUNDARY_ONLY"], "1")
+                self.assertNotIn("MWW_GENERATE_ONLY", environment)
+                self.assertEqual(trainer.STATE["training"]["exit_code"], 0)
+                self.assertEqual(record_summary.call_args.kwargs["selected_models"], ["boundary"])
+                self.assertEqual(record_summary.call_args.kwargs["outcomes"], {"boundary": 0})
+        finally:
+            with trainer.STATE_LOCK:
+                trainer.STATE["raw_phrase"] = original_raw_phrase
+                trainer.STATE["training"].clear()
+                trainer.STATE["training"].update(original_training)
+            trainer.TRAINING_PROCESS = original_process
+            trainer.TRAINING_THREAD = original_thread
 
     def test_session_stop_terminates_training_without_shutting_down_server(self):
         proc = _FakeTrainingProcess()

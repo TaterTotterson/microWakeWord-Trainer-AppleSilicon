@@ -302,6 +302,20 @@ Starting a new session does not clear samples. Use the clear buttons in `Samples
 
 Personal samples are optional. Training can run with zero personal samples after confirmation, using generated TTS samples and the stock negative datasets.
 
+### Saved words, cached datasets, and model history
+
+Every phrase started in the Trainer is added to the **Saved wake words** library. Switching to another saved word restores that word's personal samples, reviewed negatives, generated TTS corpus, augmented features, boundary examples, and retained training workspace. The previous word is archived under `wake_word_library/words/<safe_word>/assets/` in the selected data folder, so changing the active phrase no longer discards or overwrites its expensive data.
+
+Each completed run also creates an immutable snapshot under `wake_word_library/words/<safe_word>/runs/`. The **Wake Words** tab shows the run history, selected engines, recall/false-trigger metrics, thresholds, and quality rating so multiple attempts can be compared while the stable published bundle URL continues to point at the newest model.
+
+After a word has at least one detector bundle, **Retrain boundary only** rebuilds and calibrates only the wake-end model. It preserves MWW, OWW, and NWW detector weights and reuses the saved word's cached corpus and features. The direct script accepts `--boundary-only`, or `MWW_BOUNDARY_ONLY=1` for app/server launches:
+
+```bash
+./train_microwakeword_macos.sh "hey tater" 50000 100 --boundary-only
+```
+
+Boundary-only mode requires the retained detector training config from an earlier full MicroWakeWord run.
+
 Reviewed negative samples are included as a separate hard-negative feature set when present, so false wakes from your real devices can make the next model more selective.
 
 The first OWW or NWW run downloads its separate trainer stack and caches it for later runs. NanoWakeWord reuses this trainer's direct-generated positive TTS corpus, then adds personal positives, reviewed negatives, and NanoWakeWord's own adversarial negatives and held-out validation clips. CNN is the lightweight default architecture; GRU may be selected by itself or alongside CNN. The streaming gate automatically calibrates threshold and consecutive-hit patience, and the validated policy is stored with each model in the bundle. Each successful stage updates only its section of the canonical Tater bundle, so mix-and-match runs preserve other valid models already built for the phrase while removing obsolete NWW architectures.
@@ -387,7 +401,9 @@ trained_wake_words/<wake_word>.wake-bundle.json
 trained_wake_words/<wake_word>.esphome.json     # MWW-only ESPHome manifest
 ```
 
-Tater always receives `<wake_word>.wake-bundle.json`. Schema v3 embeds the complete metadata for every model that has been built, including hashes, thresholds, validation results, and available NWW architectures; it does not point at a second MWW metadata JSON. ESPHome remains deliberately separate and MWW-only through `<wake_word>.esphome.json`.
+Tater always receives `<wake_word>.wake-bundle.json`. Schema v4 embeds the complete metadata for every model that has been built, including hashes, thresholds, validation results, available NWW architectures, and one detector-independent `wake_boundary` TFLite artifact used to locate the acoustic end of the phrase. It does not point at a second MWW metadata JSON. ESPHome remains deliberately separate and MWW-only through `<wake_word>.esphome.json`.
+
+The boundary artifact is trained and threshold-calibrated separately for each wake word. Wake-only clips remain positive while deterministic wake-plus-immediate-speech clips are hard negatives, forcing a causal score peak at the phrase endpoint. Packaging fails if that dedicated model was not exported; the normal wake detector is never substituted as boundary weights.
 
 Wake-word links now advertise a LAN-reachable address instead of copying the browser's `127.0.0.1` host. The trainer uses this order:
 

@@ -12,6 +12,18 @@ class PackageModelTests(unittest.TestCase):
             root = Path(directory)
             source_model = root / "source.tflite"
             source_model.write_bytes(b"model")
+            boundary_model = root / "boundary.tflite"
+            boundary_model.write_bytes(b"boundary")
+            boundary_calibration = root / "boundary-calibration.json"
+            boundary_calibration.write_text(
+                json.dumps(
+                    {
+                        "probability_cutoff": 0.77,
+                        "selected_metrics": {"recall": 0.98},
+                    }
+                ),
+                encoding="utf-8",
+            )
             calibration_path = root / "calibration.json"
             calibration_path.write_text(
                 json.dumps(
@@ -31,6 +43,8 @@ class PackageModelTests(unittest.TestCase):
                 root / "output",
                 name_by_wake_word=True,
                 source_model=source_model,
+                source_boundary_model=boundary_model,
+                boundary_calibration_path=boundary_calibration,
             )
 
             self.assertEqual(model_path.name, "hey_tater.tflite")
@@ -46,7 +60,21 @@ class PackageModelTests(unittest.TestCase):
                 set(package_model.ESPHOME_MANIFEST_KEYS),
             )
             self.assertEqual(esphome_payload["model"], "hey_tater.tflite")
-            self.assertEqual(tater_payload["schema_version"], 3)
+            self.assertEqual(tater_payload["schema_version"], 4)
+            self.assertEqual(tater_payload["wake_boundary"]["model"], "hey_tater.boundary.tflite")
+            self.assertEqual(
+                (bundle_path.parent / "hey_tater.boundary.tflite").read_bytes(),
+                b"boundary",
+            )
+            self.assertEqual(
+                tater_payload["wake_boundary"]["training_strategy"],
+                "endpoint_hard_negative_v1",
+            )
+            self.assertEqual(tater_payload["wake_boundary"]["threshold"], 0.77)
+            self.assertEqual(
+                tater_payload["wake_boundary"]["quality_summary"]["recall"],
+                0.98,
+            )
             self.assertEqual(esphome_payload["micro"], micro_payload["micro"])
             self.assertIn("tater_native", micro_payload)
             self.assertIn("calibration", micro_payload)
@@ -59,6 +87,8 @@ class PackageModelTests(unittest.TestCase):
             root = Path(directory)
             source_model = root / "source.tflite"
             source_model.write_bytes(b"model")
+            boundary_model = root / "boundary.tflite"
+            boundary_model.write_bytes(b"boundary")
 
             model_path, bundle_path, esphome_path = package_model.package_model(
                 "こんにちは タター",
@@ -67,6 +97,7 @@ class PackageModelTests(unittest.TestCase):
                 root / "output",
                 name_by_wake_word=True,
                 source_model=source_model,
+                source_boundary_model=boundary_model,
             )
 
             expected_slug = package_model.safe_slug("こんにちは タター")
