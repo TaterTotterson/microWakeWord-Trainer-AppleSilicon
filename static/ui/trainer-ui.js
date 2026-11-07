@@ -4531,7 +4531,7 @@ var Sc = {
 				W("span", { class: "eyebrow" }, "Tater tools"),
 				W("h1", null, "Wake Word Studio"),
 				W("p", null, "Generate voices, curate real recordings, train, and publish.")
-			], -1)]), W("div", Ic, [W("div", { class: "local-trainer-status" }, [d[61] ||= W("span", { class: "live-dot" }, [W("i"), K("Local trainer")], -1), W("small", null, A("v47.5"))]), I(Y).session.safe_word ? (H(), U("span", Lc, A(I(Y).session.safe_word) + " · " + A(I(Y).language), 1)) : q("", !0)])]),
+			], -1)]), W("div", Ic, [W("div", { class: "local-trainer-status" }, [d[61] ||= W("span", { class: "live-dot" }, [W("i"), K("Local trainer")], -1), W("small", null, A("v47.6"))]), I(Y).session.safe_word ? (H(), U("span", Lc, A(I(Y).session.safe_word) + " · " + A(I(Y).language), 1)) : q("", !0)])]),
 			W("nav", Rc, [(H(), U(V, null, R(s, (e) => W("button", {
 				key: e.id,
 				type: "button",
