@@ -7,3 +7,4 @@
 - Boundary-only runs are now accepted without selecting another detector, preserve the existing bundle contents, and produce their own quality summary instead of appearing as a full MicroWakeWord run.
 - Fixed macOS virtual environments and OmniVoice launches when the selected trainer data path contains spaces or relocates a virtual environment; missing TTS engines continue cleanly with the remaining providers.
 - Improved training cancellation and app shutdown so the active process group is stopped cleanly without leaving background trainer work behind.
+- The currently installed trainer version is now shown directly under **Local trainer** in the header.

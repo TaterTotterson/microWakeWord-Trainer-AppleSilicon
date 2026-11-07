@@ -1,11 +1,21 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+const infoPlist = readFileSync(
+  resolve(import.meta.dirname, "../macos/WakeWordTrainer/Resources/Info.plist"),
+  "utf8",
+);
+const trainerVersion = infoPlist.match(
+  /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/,
+)?.[1] || "development";
 
 export default defineConfig({
   plugins: [vue()],
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
+    __TRAINER_VERSION__: JSON.stringify(trainerVersion),
   },
   build: {
     outDir: resolve(import.meta.dirname, "../static/ui"),
