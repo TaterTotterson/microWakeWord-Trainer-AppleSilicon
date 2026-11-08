@@ -132,6 +132,12 @@ The service writes to `~/Library/Logs/TaterWakeWordWatcher.log`. Check it with:
 tail -f ~/Library/Logs/TaterWakeWordWatcher.log
 ```
 
+Each request also keeps its complete training output in
+`$TATER_WAKE_TMP_ROOT/watcher/logs/issue-<number>-<wake-word>.log` (normally
+beside the trainer in `tater-wake-tmp`). If two watchers finish together, a
+rejected catalog push is recovered by merging both additions and regenerating
+the catalog manifest; it is not reported as failed model training.
+
 Remove the service with `./install_watcher_launchd.sh --uninstall`.
 
 Useful overrides include:

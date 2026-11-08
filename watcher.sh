@@ -38,6 +38,7 @@ MW_CLAIM_REFRESH_SECONDS="${MW_CLAIM_REFRESH_SECONDS:-300}"
 MW_EXTERNAL_ROOT="${TATER_WAKE_EXTERNAL_ROOT:-$(dirname "$ROOT_DIR")}"
 MW_TMP_ROOT="${TATER_WAKE_TMP_ROOT:-${MW_EXTERNAL_ROOT}/tater-wake-tmp}"
 MW_STATE_DIR="${MW_WATCHER_STATE_DIR:-${MW_TMP_ROOT}/watcher}"
+MW_LOG_DIR="${MW_WATCHER_LOG_DIR:-${MW_STATE_DIR}/logs}"
 MW_CATALOG_REPO_DIR="${MW_CATALOG_REPO_DIR:-${MW_TMP_ROOT}/repos/Tater-Wake-Words}"
 MW_TRAINER_DATA_DIR="${TATER_WAKE_DATA_DIR:-$ROOT_DIR}"
 MW_TRAINER_SUPPORT_DIR="${TATER_WAKE_SUPPORT_DIR:-$ROOT_DIR}"
@@ -75,7 +76,8 @@ if ! gh auth setup-git >/dev/null 2>&1; then
   log "WARNING: GitHub authentication is not ready; polling will retry until gh auth login or MW_GITHUB_TOKEN is configured"
 fi
 
-mkdir -p "$MW_STATE_DIR" "$MW_TMP_ROOT/tmp" "$(dirname "$MW_CATALOG_REPO_DIR")"
+mkdir -p "$MW_STATE_DIR" "$MW_LOG_DIR" "$MW_TMP_ROOT/tmp" \
+  "$(dirname "$MW_CATALOG_REPO_DIR")"
 
 if [[ ! "$MW_CLAIM_TTL_SECONDS" =~ ^[1-9][0-9]*$ ]] || \
     [[ "$MW_CLAIM_TTL_SECONDS" -lt 600 ]]; then
@@ -497,7 +499,7 @@ import sys
 from scripts.generate_wake_word_manifest import bundle_model_fields
 
 raise SystemExit(
-    0 if bundle_model_fields(Path(sys.argv[1])) else 1
+    0 if bundle_model_fields(Path(sys.argv[1]).resolve()) else 1
 )
 PY
   )
@@ -528,17 +530,8 @@ recover_catalog_package() {
   )
 }
 
-run_claimed_issue() {
-  local issue_number="$1" phrase="$2" safe_word="$3"
-  local event_file="$MW_STATE_DIR/issue-${issue_number}.json"
-
-  if ! recover_catalog_package "$safe_word"; then
-    log "Could not publish recovered artifacts for #$issue_number; will retry"
-    return 75
-  fi
-
-  printf '{"issue":{"number":%s}}\n' "$issue_number" > "$event_file"
-  log "Processing #$issue_number: '$phrase' (artifact: $safe_word)"
+run_issue_worker() {
+  local issue_number="$1" event_file="$2" log_file="$3"
 
   (
     cd "$MW_CATALOG_REPO_DIR" || exit 1
@@ -555,19 +548,56 @@ run_claimed_issue() {
     export TATER_WAKE_DATA_DIR="$MW_TRAINER_DATA_DIR"
     export TATER_WAKE_SUPPORT_DIR="$MW_TRAINER_SUPPORT_DIR"
     export RUNNER_TEMP="$MW_TMP_ROOT/tmp"
+    export MW_JOB_LOG="$log_file"
     exec /bin/bash scripts/train_issue_wake_word.sh
   ) &
   CHILD_PID=$!
 
-  local train_rc=0
-  wait "$CHILD_PID" || train_rc=$?
+  local worker_rc=0
+  wait "$CHILD_PID" || worker_rc=$?
   CHILD_PID=""
+  return "$worker_rc"
+}
+
+run_claimed_issue() {
+  local issue_number="$1" phrase="$2" safe_word="$3"
+  local event_file="$MW_STATE_DIR/issue-${issue_number}.json"
+  local log_file="$MW_LOG_DIR/issue-${issue_number}-${safe_word}.log"
+
+  if ! recover_catalog_package "$safe_word"; then
+    log "Recovered artifacts for #$issue_number raced another catalog push; merging before retry"
+    if ! sync_catalog_checkout || ! recover_catalog_package "$safe_word"; then
+      log "Could not publish recovered artifacts for #$issue_number; will retry"
+      return 75
+    fi
+  fi
+
+  printf '{"issue":{"number":%s}}\n' "$issue_number" > "$event_file"
+  printf '%s [mw_watcher] Starting issue #%s (%s)\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$issue_number" "$safe_word" > "$log_file"
+  log "Processing #$issue_number: '$phrase' (artifact: $safe_word)"
+
+  local train_rc=0
+  run_issue_worker "$issue_number" "$event_file" "$log_file" || train_rc=$?
+
+  if [[ $train_rc -eq 75 ]]; then
+    log "Catalog publish for #$issue_number was deferred; merging the concurrent update"
+    if sync_catalog_checkout && catalog_package_is_complete "$safe_word"; then
+      log "Recovered the published package for #$issue_number; finalizing its issue"
+      train_rc=0
+      run_issue_worker "$issue_number" "$event_file" "$log_file" || train_rc=$?
+    else
+      log "Catalog recovery for #$issue_number is not complete; will retry"
+      train_rc=75
+    fi
+  fi
+
   rm -f "$event_file"
 
   if [[ $train_rc -eq 0 ]]; then
     log "Completed #$issue_number ($safe_word)"
   else
-    log "Training #$issue_number exited with status $train_rc; the issue remains open"
+    log "Issue #$issue_number exited with status $train_rc; see $log_file"
   fi
   return "$train_rc"
 }
@@ -610,6 +640,7 @@ log "Catalog checkout: $MW_CATALOG_REPO_DIR"
 log "Catalog path:     $MW_CATALOG_DIR"
 log "Trainer:          $ROOT_DIR"
 log "Training data:    $MW_TRAINER_DATA_DIR"
+log "Job logs:         $MW_LOG_DIR"
 log "Watcher ID:       $MW_WATCHER_ID"
 log "Claim lease:      ${MW_CLAIM_TTL_SECONDS}s (refresh ${MW_CLAIM_REFRESH_SECONDS}s)"
 log "Poll interval:    ${MW_POLL_SECONDS}s"

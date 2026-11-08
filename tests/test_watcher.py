@@ -154,6 +154,19 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("#13 'failed before'", result.stdout)
 
+    def test_recovery_validates_absolute_paths_and_finalizes_deferred_pushes(self) -> None:
+        watcher = WATCHER.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "bundle_model_fields(Path(sys.argv[1]).resolve())",
+            watcher,
+        )
+        self.assertIn("if [[ $train_rc -eq 75 ]]", watcher)
+        self.assertIn("sync_catalog_checkout && catalog_package_is_complete", watcher)
+        self.assertGreaterEqual(watcher.count("run_issue_worker"), 3)
+        self.assertIn('export MW_JOB_LOG="$log_file"', watcher)
+        self.assertIn('MW_LOG_DIR="${MW_WATCHER_LOG_DIR:', watcher)
+
     def test_diverged_catalog_regenerates_manifest_and_pushes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
