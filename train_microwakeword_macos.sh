@@ -47,7 +47,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "${BOUNDARY_ONLY,,}" in
+case "$(printf '%s' "$BOUNDARY_ONLY" | tr '[:upper:]' '[:lower:]')" in
   1|true|yes|on) BOUNDARY_ONLY=1 ;;
   *) BOUNDARY_ONLY=0 ;;
 esac

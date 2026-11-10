@@ -77,6 +77,13 @@ class MacOSLauncherRuntimeTests(unittest.TestCase):
             self.assertIn("export VIRTUAL_ENV", script)
             self.assertIn('export PATH="$VIRTUAL_ENV/bin:$PATH"', script)
 
+    def test_training_script_supports_stock_macos_bash(self):
+        self.assertNotRegex(self.train_script, r"\$\{[^}]+,,\}")
+        self.assertIn(
+            "printf '%s' \"$BOUNDARY_ONLY\" | tr '[:upper:]' '[:lower:]'",
+            self.train_script,
+        )
+
     def test_trainer_source_compiles(self):
         source = TRAINER_SOURCE.read_text(encoding="utf-8")
         compile(source, str(TRAINER_SOURCE), "exec")

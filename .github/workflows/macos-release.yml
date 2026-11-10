@@ -164,7 +164,7 @@ jobs:
             release_body="$(/usr/bin/python3 -c 'import json, os; print(json.dumps({
               "tag_name": os.environ["GITHUB_REF_NAME"],
               "name": "WakeWord Trainer " + os.environ["VERSION_LABEL"],
-              "prerelease": True,
+              "prerelease": False,
               "body": open(os.environ["RELEASE_NOTES_PATH"], encoding="utf-8").read(),
             }))')"
             release_id="$(curl -fsS \
@@ -176,7 +176,7 @@ jobs:
           else
             release_body="$(/usr/bin/python3 -c 'import json, os; print(json.dumps({
               "name": "WakeWord Trainer " + os.environ["VERSION_LABEL"],
-              "prerelease": True,
+              "prerelease": False,
               "body": open(os.environ["RELEASE_NOTES_PATH"], encoding="utf-8").read(),
             }))')"
             curl -fsS \

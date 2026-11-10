@@ -1,5 +1,2 @@
-- Saved wake words now activate successfully when their samples are split between the working trainer folders and the saved-word library.
-- Empty working folders created while no word is active no longer trigger a false **both working and saved copies exist** conflict.
-- Positive, negative, captured, trim-history, and training workspace data are reconciled without overwriting either copy.
-- Identical files are safely deduplicated; true filename conflicts keep both recordings under deterministic recovery names with their JSON sidecars.
-- The reconciliation is idempotent, so a repaired word can be activated and retrained normally on every later use.
+- Fixed [issue #33](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/issues/33): training no longer fails immediately on a stock Mac using the system-provided Bash 3.2.
+- Boundary-only mode settings now use macOS-compatible normalization, so users do not need to install a newer Homebrew Bash to start training.
