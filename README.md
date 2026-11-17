@@ -17,13 +17,13 @@ Real samples come from device-captured wake audio, close misses, or manual uploa
 
 ## Features
 
-- `Trainer` starts a wake-word session, shows positive/negative sample counts, and lets you select MWW, OWW, NWW-CNN, NWW-GRU, or any combination. MWW is the safe default.
+- `Start` separates creating a new phrase from opening a saved word. The guided setup covers phrase, recordings, models, and review, with MWW, OWW, NWW-CNN, NWW-GRU, or any combination. MWW is the default.
 - `Wake boundary` builds a small, separately calibrated model for each wake word so Echo firmware can remove the wake phrase without cutting off speech that follows it immediately. The detector-independent model works with MWW, OWW, NWW, MWW + OWW, and MWW + NWW modes, and can be retrained by itself after one full MicroWakeWord run.
 - `Auto Training` transcribes wake triggers, files phrase-misses as reviewed negatives, retrains on a schedule, and requests a satellite model refresh through Tater.
 - `Captured Audio` reviews clips sent by Tater Native or ESPHome sats, including wake hits, close misses, and false wakes.
 - `Samples` plays, removes, clears, and manually imports personal or negative samples.
-- `Wake Words` lists locally trained JSON/model links for live wake-word switching in Tater.
-- Popup consoles show colorized training logs while long-running jobs are active.
+- `Wake words` opens per-word validation results, saved versions, comparison, and prominent bundle JSON / ESPHome JSON links. Raw model downloads remain under technical details.
+- `Training` is a full-page workspace with stage progress, colorized logs, stop controls, and the completed report. A running-status strip keeps the job accessible while browsing other pages.
 
 The production bundle is committed under `static/ui`, so the web launcher and signed macOS app do not need Node.js. To change the UI, edit `frontend/src` and rebuild it:
 
@@ -313,13 +313,12 @@ Starting a new session does not clear samples. Use the clear buttons in `Samples
 
 ## Training Flow
 
-1. Enter the wake phrase in `Trainer`.
-2. Choose the language.
-3. Choose the TTS source. `Four-provider ensemble` is recommended when Piper is available.
-4. Optionally preview the phrase with the Mac system voice. This preview is separate from the training engines.
-5. Review the positive and negative sample counts.
-6. Select any combination of `MicroWakeWord`, `openWakeWord`, `NanoWakeWord · CNN`, and `NanoWakeWord · GRU`. Selecting every option trains every model.
-7. Click `Start training` and watch the popup training console.
+1. On `Start`, choose `Create a wake word`, or open a saved word to review results and JSON links without starting a session.
+2. For a new word, enter the phrase, language, English accent, and voice-generation source. `System preview` checks pronunciation with the system voice.
+3. Add or review personal recordings and negatives. Upload, playback, trimming, VAD, restore, and bulk import remain available in the sample manager.
+4. Select any combination of `MicroWakeWord`, `openWakeWord`, `NanoWakeWord · CNN`, and `NanoWakeWord · GRU`, plus optional phrases to reject. Recovery actions are under `Additional training actions`.
+5. Review the configuration and click `Start training`. The `Training` page shows the current stage and logs; training continues while you browse.
+6. Open the completed word for its measured validation results and JSON links. For an existing phrase, `Train a new version` reuses its saved data.
 
 Personal samples are optional. Training can run with zero personal samples after confirmation, using generated TTS samples and the stock negative datasets.
 
@@ -327,7 +326,7 @@ Personal samples are optional. Training can run with zero personal samples after
 
 Every phrase started in the Trainer is added to the **Saved wake words** library. Switching to another saved word restores that word's personal samples, reviewed negatives, generated TTS corpus, augmented features, boundary examples, and retained training workspace. The previous word is archived under `wake_word_library/words/<safe_word>/assets/` in the selected data folder, so changing the active phrase no longer discards or overwrites its expensive data.
 
-Each completed run also creates an immutable snapshot under `wake_word_library/words/<safe_word>/runs/`. The **Wake Words** tab shows the run history, selected engines, recall/false-trigger metrics, thresholds, and quality rating so multiple attempts can be compared while the stable published bundle URL continues to point at the newest model.
+Each completed run also creates an immutable snapshot under `wake_word_library/words/<safe_word>/runs/`. The **Wake Words** tab shows the run history, selected engines, recall/false-trigger metrics, thresholds, and quality rating so multiple attempts can be compared and open any saved version for its own bundle JSON and ESPHome JSON URLs. These version-specific links keep referencing that version’s model bytes. `Use v… as current` validates the saved artifacts and changes the current publication without deleting recordings, caches, or other versions. The stable published JSON URL follows the selected current version and remains on the committed snapshot while another run trains. Failed attempts remain in history and cannot replace the current publication. Publish through Tater separately when satellites should switch to the selected version.
 
 After a word has at least one detector bundle, **Retrain boundary only** rebuilds and calibrates only the wake-end model. It preserves MWW, OWW, and NWW detector weights and reuses the saved word's cached corpus and features. The direct script accepts `--boundary-only`, or `MWW_BOUNDARY_ONLY=1` for app/server launches:
 
@@ -399,8 +398,9 @@ Model downloads, completed generated corpora, and feature caches are reused when
 
 The `Wake Words` tab lists locally trained wake-word packages from `trained_wake_words/`.
 
-- Copy the JSON URL into the Tater Native satellite settings to switch wake words live.
-- Open the JSON or model links directly for quick inspection.
+- Copy `Tater bundle JSON` into Tater or the Home Assistant bridge, or copy `ESPHome JSON` for a MicroWakeWord ESPHome configuration.
+- Select an earlier version to inspect its exact results and JSON links. Compare it with the current version, or explicitly use it as current.
+- Open JSON directly; raw model links remain under `Raw model files & technical details`.
 - The JSON includes the matching model path plus Tater tuning metadata.
 - No firmware flashing happens from this trainer app anymore.
 

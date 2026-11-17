@@ -1,2 +1,9 @@
-- Fixed [issue #33](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/issues/33): training no longer fails immediately on a stock Mac using the system-provided Bash 3.2.
-- Boundary-only mode settings now use macOS-compatible normalization, so users do not need to install a newer Homebrew Bash to start training.
+- Refreshed the trainer to match the Tater app and Home Assistant bridge, with a shared light/dark theme and responsive layouts.
+- Added Guided Start with separate paths for creating a new phrase and opening an existing word. Existing words open for browsing without activating a recording session.
+- Added per-word validation results, saved-version browsing, side-by-side comparison, and an explicit action to use an older version as the current publication.
+- Made Tater bundle JSON and ESPHome JSON the primary actions. Version-specific JSON links keep pointing to the matching saved model files; raw model downloads remain available under technical details.
+- Replaced the training popup with a full-page workspace containing current-stage progress, live logs, stop controls, and the completed report. A running-status strip keeps training accessible while browsing.
+- Added validated version restoration with rollback on file-write failures. Existing recordings, cached datasets, and other saved runs remain intact, and versions cannot be switched while training is active.
+- Kept current JSON links on the last committed snapshot while a new run prepares its artifacts, while preserving direct command-line publications.
+- Preserved all model choices, CNN/GRU selection, generated hard negatives, audio imports, trimming and restore, capture review, Auto Training, recovery actions, and storage controls.
+- Auto Training now commits the saved version before notifying Tater, so satellites receive the newly published model. The native data-folder picker and openWakeWord-only retry remain available.
