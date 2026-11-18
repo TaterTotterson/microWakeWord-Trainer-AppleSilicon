@@ -276,26 +276,102 @@ catalog_git_path_exists() {
   [[ -e "$git_dir/$1" ]]
 }
 
+resolve_catalog_package_conflicts() {
+  python3 - "$MW_CATALOG_REPO_DIR" "$MW_CATALOG_DIR" <<'PY'
+import importlib.util
+from pathlib import Path, PurePosixPath
+import re
+import subprocess
+import sys
+import tempfile
+
+sys.dont_write_bytecode = True
+repo = Path(sys.argv[1]).resolve()
+catalog_dir = PurePosixPath(sys.argv[2])
+suffixes = (
+    ".wake-bundle.json", ".esphome.json", ".boundary.tflite",
+    ".nww.cnn.onnx", ".nww.gru.onnx", ".oww.onnx", ".tflite",
+)
+
+
+def git(*args):
+    return subprocess.check_output(["git", "-C", str(repo), *args])
+
+
+def resolve():
+    if catalog_dir.is_absolute() or ".." in catalog_dir.parts:
+        raise ValueError("Catalog directory must be relative to its checkout")
+    conflicts = git("diff", "--name-only", "--diff-filter=U", "-z")
+    words = set()
+    for raw_path in conflicts.split(b"\0"):
+        if not raw_path:
+            continue
+        name = raw_path.decode("utf-8")
+        if name == "wake_word_manifest.json":
+            continue
+        path = PurePosixPath(name)
+        suffix = next((s for s in suffixes if path.name.endswith(s)), None)
+        word = path.name[:-len(suffix)] if suffix else ""
+        if path.parent != catalog_dir or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", word):
+            raise ValueError(f"Catalog merge has a non-generated conflict in {name}")
+        words.add(word)
+    if not words:
+        return
+
+    # Never resolve individual model files: a clean Git merge of JSON can still
+    # describe a different binary. Validate and restore the whole published
+    # package, including files that Git merged without reporting a conflict.
+    spec = importlib.util.spec_from_file_location(
+        "catalog_manifest", repo / "scripts/generate_wake_word_manifest.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    paths = []
+    with tempfile.TemporaryDirectory(prefix="mww-catalog-merge-") as temporary:
+        staging = Path(temporary).resolve()
+        module.REPO_ROOT = staging
+        for word in sorted(words):
+            for suffix in suffixes:
+                path = catalog_dir / f"{word}{suffix}"
+                target = staging / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(git("show", f"MERGE_HEAD:{path}"))
+                paths.append(str(path))
+            bundle = staging / catalog_dir / f"{word}.wake-bundle.json"
+            if not module.bundle_model_fields(bundle.resolve()):
+                raise ValueError(f"Published package for {word} failed validation; preserving local work")
+
+    local_head = git("rev-parse", "HEAD").decode().strip()
+    published_head = git("rev-parse", "MERGE_HEAD").decode().strip()
+    # All packages must pass validation before changing the index or worktree.
+    git("restore", f"--source={published_head}", "--staged", "--worktree", "--", *paths)
+    for word in sorted(words):
+        print(f"[mw_watcher] Keeping validated published package for {word} from {published_head}; "
+              f"local version remains in merge parent {local_head}", flush=True)
+
+
+try:
+    resolve()
+except (OSError, ValueError, ImportError, AttributeError, subprocess.CalledProcessError) as error:
+    print(f"[mw_watcher] {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 finish_catalog_merge() {
   catalog_git_path_exists MERGE_HEAD || return 1
 
-  local conflicts conflict
+  local conflicts
   conflicts="$(git -C "$MW_CATALOG_REPO_DIR" diff --name-only --diff-filter=U)"
   if [[ -n "$conflicts" ]]; then
-    while IFS= read -r conflict; do
-      [[ -n "$conflict" ]] || continue
-      if [[ "$conflict" != "wake_word_manifest.json" ]]; then
-        log "Catalog merge has a non-generated conflict in $conflict"
-        return 1
-      fi
-    done <<< "$conflicts"
+    resolve_catalog_package_conflicts || return 1
     log "Resolving the generated wake-word manifest after catalog merge"
   fi
 
   (
     cd "$MW_CATALOG_REPO_DIR" || exit 1
-    python3 scripts/generate_wake_word_manifest.py
-    git add wake_word_manifest.json
+    python3 scripts/generate_wake_word_manifest.py || exit 1
+    git add wake_word_manifest.json || exit 1
     if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
       exit 1
     fi
@@ -377,7 +453,7 @@ sync_catalog_checkout() {
       "origin/$MW_CATALOG_BRANCH"; then
       if ! finish_catalog_merge; then
         git -C "$MW_CATALOG_REPO_DIR" merge --abort >/dev/null 2>&1 || true
-        log "Catalog update has conflicts outside the generated manifest; will retry"
+        log "Catalog update could not safely resolve its conflicts; will retry"
         return 1
       fi
     elif ! finish_catalog_merge; then
@@ -670,7 +746,7 @@ while [[ $STOP_REQUESTED -eq 0 ]]; do
       run_rc=0
       run_issue "$issue_number" "$phrase" "$safe_word" || run_rc=$?
       if [[ $run_rc -eq 75 ]]; then
-        log "Catalog or GitHub is temporarily unavailable; deferring the remaining requests"
+        log "Catalog synchronization or GitHub access is not ready; deferring the remaining requests"
         break
       fi
     done < "$candidates_file"

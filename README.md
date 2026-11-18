@@ -81,7 +81,13 @@ The watcher does not depend on a continuously connected GitHub Actions runner.
 Local training continues through a temporary network outage. Failed pushes are
 kept in its dedicated catalog checkout and retried after the connection returns.
 If GitHub advances meanwhile, the watcher merges both additions and regenerates
-the derived catalog manifest. Issues left with `mww-processing`, or labeled
+the derived catalog manifest. If duplicate requests produce conflicting models
+for the same word, recovery keeps the complete, hash-validated package already
+published in the catalog. It restores all seven matching artifacts together;
+the local alternative remains recoverable in the merge's parent history.
+Incomplete or invalid published packages and conflicts outside the known word
+artifacts still stop recovery without discarding local work.
+Issues left with `mww-processing`, or labeled
 `mww-failed` despite having a complete local package, are reclaimed after a
 restart without retraining.
 
