@@ -331,6 +331,8 @@ class WatcherTests(unittest.TestCase):
                     "MW_CATALOG_REPO_DIR": str(catalog),
                     "MW_WATCHER_STATE_DIR": str(temp / "state"),
                     "TATER_WAKE_TMP_ROOT": str(temp / "runtime"),
+                    "TATER_WAKE_DATA_DIR": str(temp / "trainer-data"),
+                    "TATER_WAKE_SUPPORT_DIR": str(temp / "trainer-support"),
                 }
             )
             result = subprocess.run(

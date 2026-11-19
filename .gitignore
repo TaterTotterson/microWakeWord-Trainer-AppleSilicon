@@ -19,6 +19,9 @@ auto_train_models/
 .cache/
 .env
 .watcher/
+.watcher-training-word.json
+.watcher-training-word.json.*.tmp
+training.lock
 .venv/
 .recorder-venv/
 macos/*/.build/

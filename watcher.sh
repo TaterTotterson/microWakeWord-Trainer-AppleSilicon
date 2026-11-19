@@ -34,6 +34,8 @@ MW_DEBUG="${MW_DEBUG:-0}"
 MW_WATCHER_ID="${MW_WATCHER_ID:-}"
 MW_CLAIM_TTL_SECONDS="${MW_CLAIM_TTL_SECONDS:-86400}"
 MW_CLAIM_REFRESH_SECONDS="${MW_CLAIM_REFRESH_SECONDS:-300}"
+MW_CLEANUP_AFTER_PUBLISH="${MW_CLEANUP_AFTER_PUBLISH:-1}"
+MW_CLEANUP_PUBLISHED_BACKLOG="${MW_CLEANUP_PUBLISHED_BACKLOG:-1}"
 
 MW_EXTERNAL_ROOT="${TATER_WAKE_EXTERNAL_ROOT:-$(dirname "$ROOT_DIR")}"
 MW_TMP_ROOT="${TATER_WAKE_TMP_ROOT:-${MW_EXTERNAL_ROOT}/tater-wake-tmp}"
@@ -112,6 +114,8 @@ fi
 
 LOCK_DIR="$MW_STATE_DIR/lock"
 CLAIM_TOOL="$ROOT_DIR/watcher_claims.sh"
+CLEANUP_TOOL="$ROOT_DIR/watcher_cleanup.py"
+BACKLOG_CLEANUP_PENDING=1
 CHILD_PID=""
 CLAIM_HEARTBEAT_PID=""
 CURRENT_CLAIM_ISSUE=""
@@ -120,6 +124,10 @@ WATCHER_PID=$$
 
 if [[ ! -f "$CLAIM_TOOL" ]]; then
   log "ERROR: Cross-Mac claim helper is missing: $CLAIM_TOOL"
+  exit 1
+fi
+if [[ "$MW_CLEANUP_AFTER_PUBLISH" == "1" && ! -f "$CLEANUP_TOOL" ]]; then
+  log "ERROR: Published-word cleanup helper is missing: $CLEANUP_TOOL"
   exit 1
 fi
 
@@ -635,6 +643,32 @@ run_issue_worker() {
   return "$worker_rc"
 }
 
+cleanup_published_word() {
+  [[ "$MW_CLEANUP_AFTER_PUBLISH" == "1" ]] || return 0
+  python3 "$CLEANUP_TOOL" word --word "$1" \
+    --repo "$MW_CATALOG_REPO_DIR" --catalog-dir "$MW_CATALOG_DIR" \
+    --branch "$MW_CATALOG_BRANCH" --data-dir "$MW_TRAINER_DATA_DIR" \
+    --support-dir "$MW_TRAINER_SUPPORT_DIR" --reports-dir "$MW_LOG_DIR/completed"
+}
+
+cleanup_published_backlog() {
+  [[ "$MW_CLEANUP_AFTER_PUBLISH" == "1" && \
+     "$MW_CLEANUP_PUBLISHED_BACKLOG" == "1" && \
+     "$BACKLOG_CLEANUP_PENDING" == "1" && \
+     "$MW_DRY_RUN" != "1" && \
+     -d "$MW_CATALOG_REPO_DIR/.git" ]] || return 0
+  log "Checking old word workspaces against GitHub before starting another job"
+  if python3 "$CLEANUP_TOOL" sweep \
+      --repo "$MW_CATALOG_REPO_DIR" --catalog-dir "$MW_CATALOG_DIR" \
+      --branch "$MW_CATALOG_BRANCH" --data-dir "$MW_TRAINER_DATA_DIR" \
+      --support-dir "$MW_TRAINER_SUPPORT_DIR" --reports-dir "$MW_LOG_DIR/completed" \
+      --issues "$MW_STATE_DIR/issues.json" --done-label "$MW_LABEL_DONE"; then
+    BACKLOG_CLEANUP_PENDING=0
+  else
+    log "Backlog cleanup deferred; existing workspaces kept"
+  fi
+}
+
 run_claimed_issue() {
   local issue_number="$1" phrase="$2" safe_word="$3"
   local event_file="$MW_STATE_DIR/issue-${issue_number}.json"
@@ -644,6 +678,17 @@ run_claimed_issue() {
     log "Recovered artifacts for #$issue_number raced another catalog push; merging before retry"
     if ! sync_catalog_checkout || ! recover_catalog_package "$safe_word"; then
       log "Could not publish recovered artifacts for #$issue_number; will retry"
+      return 75
+    fi
+  fi
+
+  if [[ "$MW_CLEANUP_AFTER_PUBLISH" == "1" ]] && ! catalog_package_is_complete "$safe_word"; then
+    # Fixed MWW feature paths are shared between sequential jobs. Record their
+    # owner before training so handling an already-existing word cannot delete
+    # another word's unfinished workspace after a restart.
+    if ! python3 "$CLEANUP_TOOL" mark --word "$safe_word" \
+        --data-dir "$MW_TRAINER_DATA_DIR" --support-dir "$MW_TRAINER_SUPPORT_DIR"; then
+      log "Could not reserve the training workspace for #$issue_number; will retry"
       return 75
     fi
   fi
@@ -672,6 +717,9 @@ run_claimed_issue() {
 
   if [[ $train_rc -eq 0 ]]; then
     log "Completed #$issue_number ($safe_word)"
+    if ! cleanup_published_word "$safe_word"; then
+      log "WARNING: #$issue_number completed, but cleanup was deferred; remaining scratch data was kept"
+    fi
   else
     log "Issue #$issue_number exited with status $train_rc; see $log_file"
   fi
@@ -722,6 +770,7 @@ log "Claim lease:      ${MW_CLAIM_TTL_SECONDS}s (refresh ${MW_CLAIM_REFRESH_SECO
 log "Poll interval:    ${MW_POLL_SECONDS}s"
 log "Retry failed:     $MW_RETRY_FAILED"
 log "Dry run:          $MW_DRY_RUN"
+log "Cleanup on publish: $MW_CLEANUP_AFTER_PUBLISH (startup backlog: $MW_CLEANUP_PUBLISHED_BACKLOG)"
 
 while [[ $STOP_REQUESTED -eq 0 ]]; do
   candidates_file="$MW_STATE_DIR/candidates.tsv"
@@ -730,6 +779,8 @@ while [[ $STOP_REQUESTED -eq 0 ]]; do
     sleep_until_next_poll
     continue
   fi
+
+  cleanup_published_backlog
 
   if [[ ! -s "$candidates_file" ]]; then
     debug "No pending wake-word requests"

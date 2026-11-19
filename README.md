@@ -144,6 +144,27 @@ beside the trainer in `tater-wake-tmp`). If two watchers finish together, a
 rejected catalog push is recovered by merging both additions and regenerating
 the catalog manifest; it is not reported as failed model training.
 
+After each successful job, the watcher fetches the catalog branch and checks
+that all seven local package files match a complete, hash-validated package on
+GitHub. Only then does it remove that word's OWW/NWW generated audio, features,
+checkpoints, and redundant publication staging. Generated MWW audio, augmented
+features, boundary examples/features, and checkpoints are removed only when
+the watcher recorded that this word owns the shared training workspace.
+Failed training, unpushed packages, mismatched files, and unverifiable GitHub
+access keep their scratch data for recovery. Cleanup also respects the desktop
+trainer's active training lock.
+
+On startup, the watcher also checks old per-word workspaces against GitHub to
+reclaim completed jobs left by older versions. Words with unfinished open
+requests (including failed and processing requests) are skipped. Shared
+datasets, the OWW/NWW feature bank, environments, personal recordings, reviewed
+negatives, captured audio, saved library versions, the catalog checkout, and
+final exports in `tater-wake-tmp/outputs/` are retained. Compact configs and
+quality/calibration reports are archived beneath
+`$MW_WATCHER_LOG_DIR/completed/<word>/<catalog-commit>/`; the complete issue logs
+remain in the usual logs folder. This cleanup applies to the headless watcher;
+desktop training continues to retain its per-word library and caches.
+
 Remove the service with `./install_watcher_launchd.sh --uninstall`.
 
 Useful overrides include:
@@ -161,6 +182,10 @@ Useful overrides include:
 - `MW_RETRY_FAILED=1` — include issues labeled `mww-failed`; leave this disabled
   for the continuous service to avoid repeatedly training a permanently broken
   request.
+- `MW_CLEANUP_AFTER_PUBLISH=0` — keep watcher training scratch for debugging;
+  cleanup is enabled by default.
+- `MW_CLEANUP_PUBLISHED_BACKLOG=0` — disable the startup pass over old published
+  words while retaining cleanup after each new successful job.
 
 Only one automation worker should be active. Disable the automatic self-hosted
 Actions trigger, or stop its runner, before starting this watcher.
