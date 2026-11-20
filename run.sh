@@ -161,4 +161,4 @@ if [[ ! -x "$UVICORN" ]]; then
 fi
 
 echo "→ Launching: $UVICORN trainer_server:app --host $HOST --port $PORT"
-exec "$UVICORN" trainer_server:app --host "$HOST" --port "$PORT"
+exec "$UVICORN" trainer_server:app --host "$HOST" --port "$PORT" --timeout-graceful-shutdown 2
