@@ -1,561 +1,157 @@
 <div align="center">
   <a href="https://taterassistant.com">
-    <img src="images/tater-repo-logo.png" alt="microWakeWord Trainer" width="460"/>
+    <img src="images/tater-repo-logo.png" alt="Tater Wake Word Trainer" width="460"/>
   </a>
 </div>
 <p align="center">
-  <a href="https://taterassistant.com">
-    <img alt="Visit Tater Assistant" src="https://img.shields.io/badge/Tater%20Assistant-Visit%20Website-F28C28?style=for-the-badge&logo=googlechrome&logoColor=white" />
-  </a>
+  <a href="https://taterassistant.com">taterassistant.com</a>
 </p>
 
-Train any mix of microWakeWord, openWakeWord, NanoWakeWord CNN, and NanoWakeWord GRU models on Apple Silicon with a local web UI, multilingual TTS, device-captured samples, reviewed false-wake negatives, live training logs, and local wake-word links for Tater Native satellites.
-
-Real samples come from device-captured wake audio, close misses, or manual uploads. Every saved sample is normalized to `16 kHz / mono / 16-bit PCM WAV` before training.
-
----
-
-## Features
-
-- `Start` separates creating a new phrase from opening a saved word. The guided setup covers phrase, recordings, models, and review, with MWW, OWW, NWW-CNN, NWW-GRU, or any combination. MWW is the default.
-- `Wake boundary` builds a small, separately calibrated model for each wake word so Echo firmware can remove the wake phrase without cutting off speech that follows it immediately. The detector-independent model works with MWW, OWW, NWW, MWW + OWW, and MWW + NWW modes, and can be retrained by itself after one full MicroWakeWord run.
-- `Auto Training` transcribes wake triggers, files phrase-misses as reviewed negatives, retrains on a schedule, and requests a satellite model refresh through Tater.
-- `Captured Audio` reviews clips sent by Tater Native or ESPHome sats, including wake hits, close misses, and false wakes.
-- `Samples` plays, removes, clears, and manually imports personal or negative samples.
-- `Wake words` opens per-word validation results, saved versions, comparison, and prominent bundle JSON / ESPHome JSON links. Raw model downloads remain under technical details.
-- `Training` is a full-page workspace with stage progress, colorized logs, stop controls, and the completed report. A running-status strip keeps the job accessible while browsing other pages.
-
-The production bundle is committed under `static/ui`, so the web launcher and signed macOS app do not need Node.js. To change the UI, edit `frontend/src` and rebuild it:
-
-```bash
-cd frontend
-npm install
-npm run build
-```
-
-`npm run build` type-checks every Vue component before writing the offline bundle used by `trainer_server.py`.
-
-The UI stays synchronized with training, satellite captures, recordings, and saved versions through `/api/events` (server-sent events). It reconnects automatically, polls if streaming is unavailable, and catches up when a browser tab becomes active again. Background refreshes preserve unsaved setup/settings, clip assignments, and the version being viewed. They skip recursive dataset storage scans. If using a reverse proxy, allow streaming responses on `/api/events` without buffering.
-
-Run `npm test` in `frontend` with Node.js 22.6 or newer to check live updates, connection recovery, and draft preservation.
-
----
-
-## macOS App
-
-The easiest way to run the trainer on Apple Silicon is the signed macOS app from the GitHub releases page:
-
-[Download WakeWord Trainer for macOS](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/releases/latest)
-
-The app wraps the same local web UI, keeps the capture server running from the menu bar, and opens the trainer in a native macOS window. It stores captured audio, samples, generated models, caches, and local environments in:
-
-```text
-~/.taterwakewordtrainer/
-```
-
-To put the large trainer data on an external drive, open `Data` and click `Change Folder…`, or use `Change Data Folder...` in the menu bar. Choose a drive or parent folder; the app creates `WakeWord Trainer Data` inside it. The trainer stops locally, copies and verifies the data with visible progress, switches the saved location only after verification, and then restarts. Use an APFS or other Mac-compatible writable volume and keep it connected while the trainer is running.
-
-The small native launcher runtime, recovery logs, and managed base Python stay under `~/.taterwakewordtrainer/` so the app can still explain a missing or disconnected data drive.
-
-Use the manual clone flow below if you want to develop the trainer, run directly from source, or inspect the scripts.
-
----
-
-## Clone The Repo
-
-```bash
-git clone https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon.git
-cd microWakeWord-Trainer-AppleSilicon
-```
-
----
-
-## GitHub Issue Watcher
-
-`watcher.sh` is the headless automation path for the dedicated training Mac. It
-polls open `mww:` issues in
-[`TaterTotterson/Tater-Wake-Words`](https://github.com/TaterTotterson/Tater-Wake-Words),
-trains MWW, OWW, NanoWakeWord CNN, NanoWakeWord GRU, and the wake-boundary
-model, commits the seven V9 artifacts plus the catalog manifest, comments on
-the issue, and closes it. V9 uses one schema-v4 `.wake-bundle.json` in Tater,
-including the boundary-model metadata, and keeps a separate `.esphome.json`
-for ESPHome microWakeWord. Existing V8 packages remain unchanged.
-
-The watcher does not depend on a continuously connected GitHub Actions runner.
-Local training continues through a temporary network outage. Failed pushes are
-kept in its dedicated catalog checkout and retried after the connection returns.
-If GitHub advances meanwhile, the watcher merges both additions and regenerates
-the derived catalog manifest. If duplicate requests produce conflicting models
-for the same word, recovery keeps the complete, hash-validated package already
-published in the catalog. It restores all seven matching artifacts together;
-the local alternative remains recoverable in the merge's parent history.
-Incomplete or invalid published packages and conflicts outside the known word
-artifacts still stop recovery without discarding local work.
-Issues left with `mww-processing`, or labeled
-`mww-failed` despite having a complete local package, are reclaimed after a
-restart without retraining.
-
-Multiple Macs can run the watcher against the same issue queue. Before training,
-each watcher atomically creates a temporary `mww-watcher-claim-*` Git tag in the
-catalog repository. A Mac that loses the claim skips that issue and continues to
-the next one. The claim is renewed while training and deleted when the job exits;
-the same Mac immediately renews its claim after a restart. An abandoned claim
-expires after 24 hours by default so another Mac can recover it. These
-coordination tags are not release/version tags and do not trigger a workflow or
-trainer release build.
-
-Authenticate once with GitHub CLI:
-
-```bash
-gh auth login
-```
-
-Alternatively, create a local `.env` file containing a token with issue and
-repository-content write access. `.env` is ignored by Git:
-
-```bash
-MW_GITHUB_TOKEN=github_pat_replace_me
-```
-
-Confirm the pending queue without changing anything:
-
-```bash
-MW_ONCE=1 MW_DRY_RUN=1 ./watcher.sh
-```
-
-Run it continuously in the current terminal:
-
-```bash
-./watcher.sh
-```
-
-For the training Mac, install it as a launchd service so it starts at login,
-survives terminal disconnects, and restarts if the watcher exits:
-
-```bash
-./install_watcher_launchd.sh
-```
-
-The service writes to `~/Library/Logs/TaterWakeWordWatcher.log`. Check it with:
-
-```bash
-tail -f ~/Library/Logs/TaterWakeWordWatcher.log
-```
-
-Each request also keeps its complete training output in
-`$TATER_WAKE_TMP_ROOT/watcher/logs/issue-<number>-<wake-word>.log` (normally
-beside the trainer in `tater-wake-tmp`). If two watchers finish together, a
-rejected catalog push is recovered by merging both additions and regenerating
-the catalog manifest; it is not reported as failed model training.
-
-After each successful job, the watcher fetches the catalog branch and checks
-that all seven local package files match a complete, hash-validated package on
-GitHub. Only then does it remove that word's OWW/NWW generated audio, features,
-checkpoints, and redundant publication staging. Generated MWW audio, augmented
-features, boundary examples/features, and checkpoints are removed only when
-the watcher recorded that this word owns the shared training workspace.
-Failed training, unpushed packages, mismatched files, and unverifiable GitHub
-access keep their scratch data for recovery. Cleanup also respects the desktop
-trainer's active training lock.
-
-On startup, the watcher also checks old per-word workspaces against GitHub to
-reclaim completed jobs left by older versions. Words with unfinished open
-requests (including failed and processing requests) are skipped. Shared
-datasets, the OWW/NWW feature bank, environments, personal recordings, reviewed
-negatives, captured audio, saved library versions, the catalog checkout, and
-final exports in `tater-wake-tmp/outputs/` are retained. Compact configs and
-quality/calibration reports are archived beneath
-`$MW_WATCHER_LOG_DIR/completed/<word>/<catalog-commit>/`; the complete issue logs
-remain in the usual logs folder. This cleanup applies to the headless watcher;
-desktop training continues to retain its per-word library and caches.
-
-Remove the service with `./install_watcher_launchd.sh --uninstall`.
-
-Useful overrides include:
-
-- `MW_POLL_SECONDS=60` — issue polling interval.
-- `MW_CATALOG_REPO_DIR=/path/to/checkout` — dedicated catalog checkout.
-- `MW_CATALOG_DIR=microWakeWordsV9` — destination schema-v4 catalog folder.
-- `TATER_WAKE_TMP_ROOT=/path/to/temp` — temp files, caches, and watcher state.
-- `TATER_WAKE_DATA_DIR=/path/to/data` — persistent trainer datasets.
-- `MW_WATCHER_ID=mac-studio` — optional readable identity; each Mac receives a
-  stable generated identity automatically when this is omitted.
-- `MW_CLAIM_TTL_SECONDS=86400` — abandoned cross-Mac claim expiry (24 hours by
-  default; active training renews it continuously).
-- `MW_CLAIM_REFRESH_SECONDS=300` — active-claim renewal interval.
-- `MW_RETRY_FAILED=1` — include issues labeled `mww-failed`; leave this disabled
-  for the continuous service to avoid repeatedly training a permanently broken
-  request.
-- `MW_CLEANUP_AFTER_PUBLISH=0` — keep watcher training scratch for debugging;
-  cleanup is enabled by default.
-- `MW_CLEANUP_PUBLISHED_BACKLOG=0` — disable the startup pass over old published
-  words while retaining cleanup after each new successful job.
-
-Only one automation worker should be active. Disable the automatic self-hosted
-Actions trigger, or stop its runner, before starting this watcher.
-
----
-
-## Run The Web UI
-
-```bash
-./run.sh
-```
-
-The launcher:
-
-- requires Python `3.11` by default at `/opt/homebrew/bin/python3.11`
-- creates or reuses `~/.taterwakewordtrainer/recorder-venv`
-- installs the UI dependencies
-- serves the app on `0.0.0.0:8789` so satellites can send captured audio
-
-Running from a Git clone still keeps datasets, samples, generated features, models, logs, caches, and local environments under `~/.taterwakewordtrainer`. The source checkout is not used as a training-data directory.
-
-Open:
-
-```text
-http://127.0.0.1:8789
-```
-
-Useful overrides:
-
-```bash
-REC_HOST=127.0.0.1 ./run.sh
-REC_PORT=8790 ./run.sh
-REC_PYTHON_BIN=/path/to/python3.11 ./run.sh
-```
-
-If you change `REC_PORT`, use that same port in the satellite `Trainer App URL`.
-
----
-
-## macOS Menu Bar App
-
-The native app lives in:
-
-```text
-macos/WakeWordTrainer/
-```
-
-It wraps the same local web UI, keeps the capture server running from a menu bar item, and opens the trainer in an embedded macOS window. On first launch it copies the bundled trainer source into:
-
-```text
-~/.taterwakewordtrainer/app/current
-```
-
-Captured audio, samples, generated models, caches, and local training environments use the selected data folder and are kept across app updates. The default remains `~/.taterwakewordtrainer/app/current` until it is changed from the Data tab or menu bar.
-
-Build locally:
-
-```bash
-macos/WakeWordTrainer/scripts/build_app.sh
-```
-
-Build the updater zip and manifest:
-
-```bash
-macos/WakeWordTrainer/scripts/package_update.sh
-```
-
-Build the drag-to-Applications installer DMG:
-
-```bash
-macos/WakeWordTrainer/scripts/build_dmg.sh
-```
-
-Tagged releases matching the app version, for example `v15`, run `.github/workflows/macos-release.yml`. The workflow builds the updater zip, installer DMG, update manifest, uploads them as workflow/GitHub release assets, and commits the generated release files back to `main`.
-
-Update `WHATS_NEW.md` before creating a release tag. The workflow prepends that curated section to GitHub's automatically generated release notes.
-
----
-
-## Captured Audio Workflow
-
-To collect samples from a sat, point its trainer feedback setting at this app. Tater Native satellites use the native settings popup in Tater. Older ESPHome satellites can still use their device entities.
-
-For Tater Native satellites, enable trainer feedback in Tater:
-
-- `Send Good Wakes To Trainer` toggles upload of confirmed wake-word triggers.
-- `Send Close Misses To Trainer` toggles upload of near misses.
-- `Trainer App URL` sets the trainer address, for example `http://trainer.local:8789` or `http://<trainer-ip>:8789`.
-
-For older ESPHome firmware, the equivalent capture setup is exposed as device entities:
-
-- `Capture Wake Audio` toggles upload of wake-word triggers.
-- `Capture Close Misses` toggles upload of near misses.
-- `Trainer App URL` sets the trainer address, for example `http://<trainer-ip>:8789`.
-
-Satellites send raw captured audio to:
-
-```text
-/api/upload_captured_audio_raw
-```
-
-Keep the training app running and reachable at the `Trainer App URL` while capture is enabled. The sats upload clips live; if the app is stopped or the URL is wrong, captured audio will not be saved.
-
-In the `Captured Audio` tab:
-
-- play each clip from the inbox
-- mark good wake-word clips as `This is good`
-- mark bad triggers as `False wake`
-- discard clips that should not be used
-
-Approved clips move into:
-
-```text
-personal_samples/
-```
-
-False wakes move into:
-
-```text
-negative_samples/
-```
-
-Captured audio is boosted for easier playback in the UI, then kept in the correct training format.
-
----
-
-## Samples
-
-The `Samples` tab is the sample library.
-
-- `Personal` samples are positive examples of the wake word.
-- `Negative` samples are reviewed false wakes or hard negatives.
-- Both can be played back and removed one at a time.
-- Manual upload is available here as an optional seed path.
-
-Accepted manual upload formats include:
-
-- WAV
-- MP3
-- M4A
-- FLAC
-- OGG
-- AAC
-- OPUS
-- WEBM
-
-Uploads are validated or converted with `ffmpeg` into:
-
-```text
-16 kHz / mono / 16-bit PCM WAV
-```
-
-Starting a new session does not clear samples. Use the clear buttons in `Samples` if you want to remove saved personal or negative clips.
-
----
-
-## Training Flow
-
-1. On `Start`, choose `Create a wake word`, or open a saved word to review results and JSON links without starting a session.
-2. For a new word, enter the phrase, language, English accent, and voice-generation source. `System preview` checks pronunciation with the system voice.
-3. Add or review personal recordings and negatives. Upload, playback, trimming, VAD, restore, and bulk import remain available in the sample manager.
-4. Select any combination of `MicroWakeWord`, `openWakeWord`, `NanoWakeWord · CNN`, and `NanoWakeWord · GRU`, plus optional phrases to reject. Recovery actions are under `Additional training actions`.
-5. Review the configuration and click `Start training`. The `Training` page shows the current stage and logs; training continues while you browse.
-6. Open the completed word for its measured validation results and JSON links. For an existing phrase, `Train a new version` reuses its saved data.
-
-Personal samples are optional. Training can run with zero personal samples after confirmation, using generated TTS samples and the stock negative datasets.
-
-### Saved words, cached datasets, and model history
-
-Every phrase started in the Trainer is added to the **Saved wake words** library. Switching to another saved word restores that word's personal samples, reviewed negatives, generated TTS corpus, augmented features, boundary examples, and retained training workspace. The previous word is archived under `wake_word_library/words/<safe_word>/assets/` in the selected data folder, so changing the active phrase no longer discards or overwrites its expensive data.
-
-Each completed run also creates an immutable snapshot under `wake_word_library/words/<safe_word>/runs/`. The **Wake Words** tab shows the run history, selected engines, recall/false-trigger metrics, thresholds, and quality rating so multiple attempts can be compared and open any saved version for its own bundle JSON and ESPHome JSON URLs. These version-specific links keep referencing that version’s model bytes. `Use v… as current` validates the saved artifacts and changes the current publication without deleting recordings, caches, or other versions. The stable published JSON URL follows the selected current version and remains on the committed snapshot while another run trains. Failed attempts remain in history and cannot replace the current publication. Publish through Tater separately when satellites should switch to the selected version.
-
-After a word has at least one detector bundle, **Retrain boundary only** rebuilds and calibrates only the wake-end model. It preserves MWW, OWW, and NWW detector weights and reuses the saved word's cached corpus and features. The direct script accepts `--boundary-only`, or `MWW_BOUNDARY_ONLY=1` for app/server launches:
-
-```bash
-./train_microwakeword_macos.sh "hey tater" 50000 100 --boundary-only
-```
-
-Boundary-only mode requires the retained detector training config from an earlier full MicroWakeWord run.
-
-Reviewed negative samples are included as a separate hard-negative feature set when present, so false wakes from your real devices can make the next model more selective.
-
-The first OWW or NWW run downloads its separate trainer stack and caches it for later runs. NanoWakeWord reuses this trainer's direct-generated positive TTS corpus, then adds personal positives, reviewed negatives, and NanoWakeWord's own adversarial negatives and held-out validation clips. CNN is the lightweight default architecture; GRU may be selected by itself or alongside CNN. The streaming gate automatically calibrates threshold and consecutive-hit patience, and the validated policy is stored with each model in the bundle. Each successful stage updates only its section of the canonical Tater bundle, so mix-and-match runs preserve other valid models already built for the phrase while removing obsolete NWW architectures.
-
----
-
-## Auto Training
-
-Auto Training is disabled until it is configured in its own tab.
-
-1. Enter the active wake phrase, STT language, and local STT engine.
-2. Choose how often training may run and how many new negatives are required.
-3. Set the Tater URL (normally `http://127.0.0.1:8501` when Tater runs on the same Mac), click `Link Tater`, and enter the short-lived code shown in Tater Voice Settings. After training, the trainer tells Tater which new wake-word JSON is active and Tater broadcasts it to every satellite.
-4. Save and enable Auto Training.
-
-New wake-trigger captures are transcribed locally with the engine selected in Auto Training. Faster Whisper is the recommended default, Parakeet ONNX provides a multilingual ONNX option, and MLX Whisper remains available for users who prefer it. A normal wake trigger moves to `negative_samples/` only when STT returns text and the configured wake phrase is absent. By default, confirmed phrase matches stay in `Captured Audio` for review.
-
-Two optional cleanup rules are available:
-
-- `Delete confirmed good wakes` removes normal wake-trigger clips after STT confirms the configured phrase.
-- `Promote confirmed close misses` checks close misses that passed VAD and moves them to the personal positive samples only when STT confirms the configured phrase.
-
-A close miss that was blocked by VAD, has an empty transcript, or does not contain the configured phrase stays in `Captured Audio`; it is never turned into a negative automatically. Captures for another configured wake word also stay out of the automatic path. The transcript and auto-review reason remain in sample or Auto Training state metadata for auditing.
-
-Saving Auto Training settings also scans existing eligible captures. Enabling close-miss promotion reviews previous unreviewed close misses, while enabling cleanup removes previously confirmed good wakes without transcribing them a second time.
-
-The UI intentionally exposes only the STT engine. The trainer manages the matching model and runtime settings: Faster Whisper uses `small.en` for English and `small` for other languages, MLX Whisper uses the matching managed base model, and Parakeet uses the INT8 `nemo-parakeet-tdt-0.6b-v3` model. Models download on first use into `auto_train_models/` and are reused. Scheduled training only starts after the configured number of new auto-reviewed negatives has accumulated. A successful automatic run securely publishes the trained wake-word name and JSON URL to the linked Tater instance. Tater saves it as the global satellite wake word and pushes the updated setting to every connected satellite.
-
-Use `Review inbox now`, `Train now`, and `Publish current wake word now` to run each stage manually while testing the setup.
-
----
-
-## Language Support
-
-The language picker is built from the live OmniVoice catalog and the installed modern/legacy engines.
-
-- OmniVoice supplies the broad multilingual route (hundreds of catalog languages).
-- Qwen3-TTS joins the ensemble for Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian.
-- MOSS-TTS-Nano joins the ensemble for its published multilingual set.
-- Languages covered by all three engines are marked `Recommended`; smaller ensembles are marked `Supported` or `Experimental`.
-- Qwen, OmniVoice, and Piper generate final corpus takes directly. MOSS Nano is clone-only, so each MOSS take uses a different already-accepted direct take as its carrier instead of cycling a small profile bank.
-- Qwen exposes 18,750 balanced voice conditions before any instruction repeats, while fresh sampling seeds add further variation. Piper uses the full speaker set in its installed model.
-- Every candidate is checked for static, broadband/high-frequency noise, silence, clipping, excessive duration/rambling, and exact duplication before it can enter training. Failed provider shares are filled by a safer provider.
-
-Model environments and weights download on first use and are cached under the selected data folder (by default `~/.taterwakewordtrainer/app/current`). The Qwen and MOSS paths use MLX-Audio on Apple Silicon; OmniVoice uses PyTorch MPS. These environments are isolated from the TensorFlow training environment.
-
-`Four-provider ensemble` uses OmniVoice, Qwen, MOSS, and Piper when a compatible Piper model exists, and safely falls back to the modern providers where it does not. `Modern only` excludes Piper, and `Piper only` preserves the legacy comparison route.
-
----
-
-## Dataset Behavior
-
-The first training run downloads and prepares the training datasets when they are missing. After the datasets are prepared, later runs reuse the local copies.
-
-Model downloads, completed generated corpora, and feature caches are reused when the selected language, wake word, TTS mode, and sample inputs have not changed. Updating the macOS app does not invalidate a matching TTS corpus; only a meaningful generation input change or an incomplete corpus rebuilds it.
-
----
-
-## Trained Wake Words
-
-The `Wake Words` tab lists locally trained wake-word packages from `trained_wake_words/`.
-
-- Copy `Tater bundle JSON` into Tater or the Home Assistant bridge, or copy `ESPHome JSON` for a MicroWakeWord ESPHome configuration.
-- Select an earlier version to inspect its exact results and JSON links. Compare it with the current version, or explicitly use it as current.
-- Open JSON directly; raw model links remain under `Raw model files & technical details`.
-- The JSON includes the matching model path plus Tater tuning metadata.
-- No firmware flashing happens from this trainer app anymore.
-
-Use the main Tater app for satellite firmware updates and USB flashing.
-
----
-
-## Output Files
-
-Successful runs produce the selected firmware-ready artifacts in:
-
-```text
-trained_wake_words/<wake_word>.tflite
-trained_wake_words/<wake_word>.oww.onnx         # openWakeWord classifier
-trained_wake_words/<wake_word>.oww.verifier.pkl # when positive + negative clips exist
-trained_wake_words/<wake_word>.nww.cnn.onnx     # NanoWakeWord CNN classifier
-trained_wake_words/<wake_word>.nww.gru.onnx     # NanoWakeWord GRU classifier
-trained_wake_words/<wake_word>.boundary.tflite  # detector-independent wake-end model
-trained_wake_words/<wake_word>.wake-bundle.json
-trained_wake_words/<wake_word>.esphome.json     # MWW-only ESPHome manifest
-```
-
-Tater always receives `<wake_word>.wake-bundle.json`. Schema v4 embeds the complete metadata for every model that has been built, including hashes, thresholds, validation results, available NWW architectures, and one detector-independent `wake_boundary` TFLite artifact used to locate the acoustic end of the phrase. It does not point at a second MWW metadata JSON. ESPHome remains deliberately separate and MWW-only through `<wake_word>.esphome.json`.
-
-The boundary artifact is trained and threshold-calibrated separately for each wake word. Wake-only clips remain positive while deterministic wake-plus-immediate-speech clips are hard negatives, forcing a causal score peak at the phrase endpoint. Packaging fails if that dedicated model was not exported; the normal wake detector is never substituted as boundary weights.
-
-Wake-word links now advertise a LAN-reachable address instead of copying the browser's `127.0.0.1` host. The trainer uses this order:
-
-1. `Trainer public URL` from the Auto Training tab
-2. `REC_PUBLIC_BASE_URL`
-3. an automatically discovered LAN IPv4 address and `REC_PORT`
-
-Set the public URL explicitly if the Mac has multiple network interfaces or the satellites reach it through a different hostname.
-
-When MWW is selected, the bundle's `micro_wake_word` section keeps the standard microWakeWord fields:
-
-```json
-{
-  "micro_wake_word": {
-    "micro": {
-      "probability_cutoff": 0.97,
-      "sliding_window_size": 6
-    }
-  }
-}
-```
-
-That same embedded section includes Tater Native metadata used by newer satellites and the Tater settings UI:
-
-```json
-{
-  "micro_wake_word": {
-    "model_format": "tflite_stream_state_internal_quant",
-    "quantization": "int8",
-    "sample_rate": 16000,
-    "tater_native": {
-      "format_version": 1,
-      "wake_threshold": 0.97,
-      "wake_sliding_window": 6,
-      "close_miss_threshold": 0.80,
-      "frontend": {
-        "name": "tflm_microfrontend",
-        "sample_rate": 16000,
-        "feature_duration_ms": 30,
-        "feature_step_ms": 10,
-        "feature_size": 40
-      }
-    }
-  }
-}
-```
-
-Calibration metrics are included under `calibration` so false accepts/hour and recall can be surfaced in the UI.
-Calibration evaluates thresholds from `0.95` through `1.00` with sliding windows of `5`, `6`, and `7`. Among candidates within 0.5 percentage points of the best recall, it prefers the lowest measured ambient false-accept rate. If calibration cannot complete, packaging uses the conservative `0.97` threshold and a window of `6`.
-
-Intermediate training files are created under:
-
-```text
-trained_models/
-```
-
----
-
-## Direct Training Script
-
-Run the Apple Silicon training pipeline directly:
-
-```bash
-./train_microwakeword_macos.sh "hey_tater"
-```
-
-The direct script defaults to the four-provider route and generates every final corpus take directly. Compatibility examples:
-
-```bash
-./train_microwakeword_macos.sh "hey_tater" 50000 8 --language en --tts-mode hybrid
-./train_microwakeword_macos.sh "hey_tater" 50000 8 --language en --tts-mode modern
-./train_microwakeword_macos.sh "hey_tater" 50000 100 --language en --tts-mode piper
-```
-
-If `personal_samples/*.wav` or `negative_samples/*.wav` exists, those samples are included automatically.
-
----
-
-## Important Notes
-
-- Personal samples are optional.
-- Negative samples are optional but useful for reducing false wakes.
-- The UI server is `trainer_server.py`.
-- The launcher is `run.sh`.
-- Trainer feedback settings live in Tater for Tater Native satellites, and on device entities for older ESPHome satellites.
-
----
-
-## Credits
-
-Built on top of:
-
-- [microWakeWord](https://github.com/kahrendt/microWakeWord)
-- [OmniVoice](https://github.com/k2-fsa/OmniVoice)
-- [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
-- [MOSS-TTS](https://github.com/OpenMOSS/MOSS-TTS)
-- [MLX-Audio](https://github.com/Blaizzy/mlx-audio)
-- [piper-sample-generator](https://github.com/rhasspy/piper-sample-generator) (optional legacy mode)
+# Wake Word Trainer for Apple Silicon
+
+Train custom **MicroWakeWord**, **openWakeWord**, and **NanoWakeWord CNN/GRU**
+models on your Apple Silicon Mac, with a per-word **wake-boundary model**
+for compatible satellites. Use the guided UI to add recordings, train, compare
+versions, and copy the JSON links for your devices.
+
+## Use your models with Tater or Home Assistant
+
+Choose the satellite firmware for your hardware, then manage its wake words in
+[Tater](https://github.com/TaterTotterson/Tater) or the
+[Home Assistant Satellites bridge](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites).
+The bridge connects compatible satellites directly to Home Assistant Assist;
+the Tater app is optional for that setup.
+
+| Satellite repo | Hardware | Wake detectors |
+| --- | --- | --- |
+| [Tater Native Firmware](https://github.com/TaterTotterson/Tater-Native-Firmware) | ESP32-S3: Voice PE, Satellite1, ReSpeaker XVF3800, S3 Box | MicroWakeWord |
+| [Tater Echo Firmware](https://github.com/TaterTotterson/Tater-Echo-Firmware) | Supported, unlocked Echo, Dot, Show, and Spot devices | MWW, OWW, NWW CNN/GRU, and dual modes |
+| [Tater ThirdReality Voice Firmware](https://github.com/TaterTotterson/Tater-ThirdReality-Voice-Firmware) | ThirdReality Voice & Music Assistant (S420) | MWW, OWW, NWW CNN/GRU, and dual modes |
+
+Check the firmware repo for supported hardware and installation instructions.
+Browse ready-made models or request a word in
+[Tater Wake Words](https://github.com/TaterTotterson/Tater-Wake-Words).
+
+## Get started on Apple Silicon
+
+1. [Download the latest macOS app](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/releases/latest).
+2. Install and open **WakeWord Trainer**. The menu bar app keeps the trainer
+   server available for satellite uploads.
+3. Choose **Create a wake word**, or open a saved word for its results and JSON links.
+
+You can also [run from source](docs/advanced.md#run-from-source). The web UI
+normally opens at `http://127.0.0.1:8789`.
+
+The first training run downloads models and datasets and can take extra time
+and substantial disk space. Later runs reuse the cached files. To use an
+external drive, choose **Data & storage → Change Folder…** or **Change Data
+Folder…** from the menu bar. The app copies and verifies your data before switching.
+
+## Choose what to train
+
+Select one or more models during guided setup:
+
+| Model | Use it for |
+| --- | --- |
+| **MicroWakeWord (MWW)** | ESP32-S3 satellites, ESPHome, or a shared model for a mixed-device setup. |
+| **openWakeWord (OWW)** | An ONNX detector for compatible Echo and ThirdReality satellites. |
+| **NanoWakeWord (NWW)** | A choice of CNN, GRU, or both architectures for compatible Echo and ThirdReality satellites. |
+| **Wake boundary** | A companion model that locates the end of the wake phrase; trained with a full MWW run. |
+
+On capable satellites, **MWW + OWW** and **MWW + NWW** require both detectors
+to agree before opening a voice session. Train the matching models for the
+policy you want. Include MWW when the same bundle will serve ESP32 satellites;
+those devices use its MWW model. See the bridge's
+[wake-word guide](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/blob/main/docs/user-guide.md#configure-wake-words)
+for model selection and fallback behavior.
+
+## Train your first word
+
+1. On **Start**, choose **Create a wake word** and enter the phrase and language.
+2. Add personal recordings if you have them, or continue with generated speech.
+   Personal samples are optional; reviewed false wakes help reduce unwanted triggers.
+3. Choose the models to train. You can also enter similar-sounding phrases to reject.
+4. Review the setup and start training. Progress and logs update live while you browse.
+5. Open the word's **Results & JSON** page to review its quality report and copy its links.
+
+For an existing phrase, open the saved word and choose **Train a new version**.
+Each run keeps its own results and model files. You can compare versions, copy
+an older version's JSON links, or choose **Use v… as current** to restore it.
+To switch your satellites, apply the chosen version's JSON link in Tater or
+the Home Assistant bridge.
+
+## Put the word on your satellites
+
+The two main links are on the word's **Results & JSON** page:
+
+| Link | Where to use it |
+| --- | --- |
+| **Tater bundle JSON** (`.wake-bundle.json`) | Tater or the Home Assistant bridge. One package carries the available MWW, OWW, NWW models and wake-boundary metadata. |
+| **ESPHome JSON** (`.esphome.json`) | An ESPHome `micro_wake_word` configuration. This link is MWW-only. |
+
+In Tater or the bridge, choose the wake engine or dual mode you want and use
+the custom bundle URL. Select CNN or GRU when using NanoWakeWord. Only engines
+included in the bundle and supported by the satellite can be used.
+
+Use the trainer's LAN address in **Trainer public URL**, for example
+`http://192.168.1.50:8789`, so satellites can download the models. Keep the
+trainer reachable, or host the JSON and all referenced model files at URLs
+your satellites can reach.
+Version-specific links stay tied to that saved run; the current publication
+follows whichever version you select as current.
+
+## What the wake-boundary model does
+
+The wake detector recognizes the phrase. The **wake-boundary model** locates
+where that phrase ends in the audio. For “hey tater turn on the lights,” it
+helps keep “turn on the lights” intact when removing “hey tater” before speech
+recognition. Current Echo firmware uses this model to preserve commands spoken
+immediately after the wake phrase.
+
+- A full **MicroWakeWord** run trains and calibrates a separate boundary model
+  for that word, with its own threshold separate from wake-detection sensitivity.
+- The `.boundary.tflite` file and its settings travel in **Tater bundle JSON**;
+  there is no separate download step for users of the bundle.
+- Compatible firmware can use the same boundary model with MWW, OWW, NWW,
+  **MWW + OWW**, or **MWW + NWW** detection.
+- To update only the boundary later, use **Additional training actions →
+  Retrain boundary only**. This requires the retained data/config from a full
+  MWW run and keeps the detector models intact.
+
+Boundary support depends on the satellite firmware. The separate ESPHome JSON
+link remains an MWW detector manifest.
+
+## Improve the word with real recordings
+
+In Tater or the Home Assistant bridge, enable satellite wake/close-miss audio
+capture and set **Trainer App URL** to the trainer's LAN address. Keep the
+trainer running while you collect clips. **Audio uploads do not require the
+optional auto-training link.**
+
+In **Captures**, play the clips and check which word they belong to:
+
+- **Add positive** keeps a good example of the phrase.
+- **Mark negative** keeps a false trigger as a phrase the model should reject.
+- **Discard** removes an unwanted clip.
+
+Use **Samples** to import audio, trim clips, restore their originals, or remove
+samples. **Auto training** can transcribe captures and retrain on a schedule.
+Pair the optional **Auto-training link** only if you want new models published
+back to Tater or the bridge automatically. The bridge's
+[trainer-link guide](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/blob/main/docs/user-guide.md#link-the-wake-word-trainer)
+explains pairing and how publishing changes the shared wake profile.
+
+## Your data and more help
+
+The default data folder is `~/.taterwakewordtrainer/app/current`; use the app
+to move it to an external drive. Updates retain your recordings and saved words.
+
+Use **Data & storage** to inspect disk use and remove selected caches. Saved
+versions and recordings are separate from rebuildable training data; read each
+category before deleting it.
+
+- [Advanced guide](docs/advanced.md) — source setup, sample formats, Auto Training rules, languages, model files, and development.
+- [Issue watcher guide](docs/watcher.md) — dedicated training Macs, multi-Mac claims, recovery, and cleanup after publication.
+- [What's New](WHATS_NEW.md) and [releases](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/releases).
+- [Home Assistant wake-word setup](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/blob/main/docs/user-guide.md#configure-wake-words).
+- [Credits](docs/advanced.md#credits).
