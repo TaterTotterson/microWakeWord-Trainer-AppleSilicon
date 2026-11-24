@@ -155,3 +155,8 @@ category before deleting it.
 - [What's New](WHATS_NEW.md) and [releases](https://github.com/TaterTotterson/microWakeWord-Trainer-AppleSilicon/releases).
 - [Home Assistant wake-word setup](https://github.com/TaterTotterson/Tater-Home-Assistant-Satellites/blob/main/docs/user-guide.md#configure-wake-words).
 - [Credits](docs/advanced.md#credits).
+
+## License and trademarks
+
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+The Tater name and logo are governed by the [Tater Trademark Policy](TRADEMARKS.md).
